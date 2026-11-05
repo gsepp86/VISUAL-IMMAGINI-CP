@@ -1,0 +1,46 @@
+[package]
+name = "visualizzatore-immagini-cp"
+version = "0.1.0"
+edition = "2021"
+authors = ["Peppe CP"]
+description = "Visualizzatore Immagini CP - lettore immagini opensource creato da Peppe CP in collaborazione con IA"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+# Interfaccia grafica (accelerata dalla GPU, nessuna dipendenza da runtime)
+eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
+egui = "0.31"
+# Decodifica immagini (solo Rust, niente DLL esterne)
+image = { version = "0.25", default-features = false, features = [
+    "jpeg", "png", "gif", "bmp", "ico", "tiff", "webp", "tga", "dds", "hdr", "exr", "pnm", "qoi", "ff",
+] }
+# Finestre native "Apri file"
+rfd = "0.15"
+# SVG (opzionale: se dà problemi si può togliere con --no-default-features)
+resvg = { version = "0.45", default-features = false, optional = true }
+
+# JPEG XL: decoder Rust puro, nessuna DLL
+jxl-oxide = { version = "0.12", default-features = false, optional = true }
+
+# HEIC / AVIF tramite i codec di Windows (WIC)
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", optional = true, features = ["Win32_Foundation", "Win32_Graphics_Imaging", "Win32_System_Com"] }
+
+[features]
+default = ["svg", "jxl", "wic"]
+svg = ["dep:resvg"]
+jxl = ["dep:jxl-oxide"]
+wic = ["dep:windows"]
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(force_win_ffi)'] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
