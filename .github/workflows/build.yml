@@ -1,0 +1,31 @@
+name: Build Windows
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test logica
+        run: cargo test --release
+      - name: Compila
+        run: cargo build --release
+      - name: Installa NSIS
+        run: choco install nsis -y --no-progress
+      - name: Crea installer
+        shell: cmd
+        run: |
+          mkdir dist
+          "C:\Program Files (x86)\NSIS\makensis.exe" installer\setup.nsi
+      - name: Copia exe portatile
+        shell: cmd
+        run: copy target\release\visualizzatore-immagini-cp.exe dist\Visualizzatore-Immagini-CP-portatile.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Visualizzatore-Immagini-CP-Windows
+          path: dist/*.exe
