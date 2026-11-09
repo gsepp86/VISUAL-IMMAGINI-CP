@@ -42,7 +42,12 @@ pub fn decode(path: &Path) -> Result<(u32, u32, Vec<u8>), String> {
             CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).map_err(err)?;
         let name = HSTRING::from(path.to_string_lossy().as_ref());
         let decoder = factory
-            .CreateDecoderFromFilename(&name, None, GENERIC_READ, WICDecodeMetadataCacheOnDemand)
+            .CreateDecoderFromFilename(
+                &name,
+                None,
+                windows::Win32::Foundation::GENERIC_ACCESS_RIGHTS(GENERIC_READ),
+                WICDecodeMetadataCacheOnDemand,
+            )
             .map_err(err)?;
         let frame = decoder.GetFrame(0).map_err(err)?;
         let (mut w, mut h) = (0u32, 0u32);

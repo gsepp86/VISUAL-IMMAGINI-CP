@@ -845,7 +845,7 @@ impl App {
         painter.rect_filled(Rect::from_min_max(pos2(disp.left(), r.bottom()), disp.max), 0.0, dim);
         painter.rect_filled(Rect::from_min_max(pos2(disp.left(), r.top()), pos2(r.left(), r.bottom())), 0.0, dim);
         painter.rect_filled(Rect::from_min_max(pos2(r.right(), r.top()), pos2(disp.right(), r.bottom())), 0.0, dim);
-        painter.rect_stroke(r, 0.0, Stroke::new(1.5, Color32::WHITE), egui::StrokeKind::Outside);
+        painter.rect_stroke(r, 0.0, Stroke::new(1.5_f32, Color32::WHITE), egui::StrokeKind::Outside);
         if !editing {
             return;
         }
@@ -1497,7 +1497,7 @@ impl App {
                 if current {
                     painter.add(Shape::closed_line(
                         vec![r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()],
-                        Stroke::new(2.0, col::accent()),
+                        Stroke::new(2.0_f32, col::accent()),
                     ));
                 }
                 let inner = r.shrink(6.0);
@@ -1965,7 +1965,9 @@ fn shrink(ci: &egui::ColorImage, max: usize) -> egui::ColorImage {
             px.push(ci.pixels[(y * step).min(h - 1) * w + (x * step).min(w - 1)]);
         }
     }
-    egui::ColorImage::new([nw, nh], px)
+    let mut img = egui::ColorImage::new([nw, nh], egui::Color32::TRANSPARENT);
+    img.pixels = px;
+    img
 }
 
 /// File delle impostazioni (%APPDATA%\VisualizzatoreImmaginiCP\impostazioni.txt).
@@ -2088,7 +2090,7 @@ fn draw_page_preview(
     let (rect, _) = ui.allocate_exact_size(vec2(pw_mm * s, ph_mm * s), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 2.0, Color32::WHITE);
-    painter.rect_stroke(rect, 2.0, Stroke::new(1.0, Color32::from_gray(160)), egui::StrokeKind::Outside);
+    painter.rect_stroke(rect, 2.0, Stroke::new(1.0_f32, Color32::from_gray(160)), egui::StrokeKind::Outside);
 
     // geometria in decimi di millimetro, come nella stampa
     let (cw, ch) = ((pw_mm * 10.0).round() as i32, (ph_mm * 10.0).round() as i32);
@@ -2116,7 +2118,9 @@ fn draw_page_preview(
                 let clipped = painter.with_clip_rect(shown);
                 paint_image(&clipped, tex, full_rect.center(), full_size, rot);
             }
-            None => painter.rect_filled(shown, 0.0, Color32::from_rgb(150, 178, 215)),
+            None => {
+                painter.rect_filled(shown, 0.0, Color32::from_rgb(150, 178, 215));
+            }
         }
     }
 }
@@ -2179,7 +2183,7 @@ enum Ico {
 }
 
 fn draw_icon(p: &egui::Painter, ico: Ico, c: Pos2, color: Color32) {
-    let st = Stroke::new(1.7, color);
+    let st = Stroke::new(1.7_f32, color);
     let v = |x: f32, y: f32| pos2(c.x + x, c.y + y);
     match ico {
         Ico::Prev => {
