@@ -1596,6 +1596,12 @@ impl App {
                     ui.label(ABOUT_TEXT);
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new("Licenza MIT  •  Scritto in Rust con egui").color(col::text_dim()).size(12.5));
+                    ui.add_space(10.0);
+                    ui.label("Se vuoi contribuire al mio lavoro, puoi farlo con una piccola donazione simbolica: un'app così utile e gratuita per sempre non la trovi ovunque. Apprezzo il gesto ;-)");
+                    ui.add_space(4.0);
+                    ui.hyperlink_to(egui::RichText::new("Donate via PayPal").strong(), "https://paypal.me/PeppeCP");
+                    ui.add_space(6.0);
+                    ui.hyperlink_to("Codice sorgente su GitHub", "https://github.com/gsepp86/VISUAL-IMMAGINI-CP");
                     ui.add_space(6.0);
                 });
             });
