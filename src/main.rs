@@ -2090,13 +2090,20 @@ fn draw_page_preview(
     gap_mm: f32,
     photo: Option<(f32, f32)>,
 ) {
-    let (pw_mm, ph_mm) = page_mm;
+    // il verso scelto ribalta la pagina della stampante, come farà il driver
+    let (pw_mm, ph_mm) = match orientation {
+        print::Orientation::Portrait if page_mm.0 > page_mm.1 => (page_mm.1, page_mm.0),
+        print::Orientation::Landscape if page_mm.0 < page_mm.1 => (page_mm.1, page_mm.0),
+        _ => page_mm,
+    };
     // la pagina entra in 260 x 340 punti
     let s = (260.0 / pw_mm).min(340.0 / ph_mm);
     let (rect, _) = ui.allocate_exact_size(vec2(pw_mm * s, ph_mm * s), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
+    let painter = ui.painter_at(rect.expand(6.0));
+    // ombra del foglio, poi foglio bianco con bordo ben visibile
+    painter.rect_filled(rect.translate(vec2(3.0, 3.0)), 2.0, Color32::from_black_alpha(90));
     painter.rect_filled(rect, 2.0, Color32::WHITE);
-    painter.rect_stroke(rect, 2.0, Stroke::new(1.0_f32, Color32::from_gray(160)), egui::StrokeKind::Outside);
+    painter.rect_stroke(rect, 2.0, Stroke::new(1.5_f32, Color32::from_gray(90)), egui::StrokeKind::Outside);
 
     // geometria in decimi di millimetro, come nella stampa
     let (cw, ch) = ((pw_mm * 10.0).round() as i32, (ph_mm * 10.0).round() as i32);

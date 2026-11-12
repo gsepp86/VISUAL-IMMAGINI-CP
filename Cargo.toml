@@ -1,6 +1,6 @@
 [package]
 name = "visualizzatore-immagini-cp"
-version = "1.0.0"
+version = "2.2.0"
 edition = "2021"
 authors = ["Peppe CP"]
 description = "Visualizzatore Immagini CP - lettore immagini opensource creato da Peppe CP in collaborazione con IA"

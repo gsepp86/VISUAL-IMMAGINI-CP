@@ -121,7 +121,12 @@ fn run_inner(job: &Job, cancel: &AtomicBool, tx: &Sender<Msg>, notify: &dyn Fn()
     if job.items.is_empty() {
         return Err("Nessuna immagine da stampare.".to_string());
     }
-    let dc = PrinterDc::open(&job.printer)?;
+    let forced = match job.orientation {
+        Orientation::Auto => None,
+        Orientation::Portrait => Some(false),
+        Orientation::Landscape => Some(true),
+    };
+    let dc = PrinterDc::open_oriented(&job.printer, forced)?;
     let (pw, ph) = dc.page_px();
     let (dpi_x, _dpi_y) = dc.dpi();
     if pw <= 0 || ph <= 0 || dpi_x <= 0 {

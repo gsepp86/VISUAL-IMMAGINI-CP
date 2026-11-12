@@ -16,6 +16,14 @@ const PRINTER_ENUM_LOCAL: u32 = 2;
 const PRINTER_ENUM_CONNECTIONS: u32 = 4;
 const DIB_RGB_COLORS: u32 = 0;
 const SRCCOPY: u32 = 0x00CC_0020;
+const DM_ORIENTATION: u32 = 0x0000_0001;
+const DM_IN_BUFFER: u32 = 8;
+const DM_OUT_BUFFER: u32 = 2;
+const DMORIENT_PORTRAIT: i16 = 1;
+const DMORIENT_LANDSCAPE: i16 = 2;
+// posizione dei campi nella struttura DEVMODEW di Windows
+const DM_FIELDS_OFFSET: usize = 72;
+const DM_ORIENTATION_OFFSET: usize = 76;
 
 #[repr(C)]
 struct DocInfoW {
@@ -92,6 +100,18 @@ extern "system" {
         info: *const BitmapInfo,
         usage: u32,
         rop: u32,
+    ) -> i32;
+}
+
+#[link(name = "winspool")]
+extern "system" {
+    fn DocumentPropertiesW(
+        hwnd: isize,
+        printer: *const u16,
+        device: *const u16,
+        output: *mut u8,
+        input: *const u8,
+        mode: u32,
     ) -> i32;
 }
 
@@ -213,6 +233,36 @@ impl PrinterDc {
         let mm_x = left.max(right) as f32 / dx as f32 * 25.4;
         let mm_y = top.max(bottom) as f32 / dy as f32 * 25.4;
         mm_x.max(mm_y)
+    }
+
+    /// Apre la stampante chiedendo al driver il verso della carta:
+    /// Some(true) = orizzontale, Some(false) = verticale, None = impostazioni predefinite.
+    pub fn open_oriented(printer: &str, landscape: Option<bool>) -> Result<Self, String> {
+        let Some(land) = landscape else {
+            return Self::open(printer);
+        };
+        let name = wide(printer);
+        let driver = wide("WINSPOOL");
+        unsafe {
+            let size = DocumentPropertiesW(0, name.as_ptr(), name.as_ptr(), std::ptr::null_mut(), std::ptr::null(), 0);
+            if size > 0 {
+                let mut buf = vec![0u64; (size as usize + 7) / 8];
+                let dm = buf.as_mut_ptr() as *mut u8;
+                if DocumentPropertiesW(0, name.as_ptr(), name.as_ptr(), dm, std::ptr::null(), DM_OUT_BUFFER) == 1 {
+                    let orient: i16 = if land { DMORIENT_LANDSCAPE } else { DMORIENT_PORTRAIT };
+                    *(dm.add(DM_FIELDS_OFFSET) as *mut u32) |= DM_ORIENTATION;
+                    *(dm.add(DM_ORIENTATION_OFFSET) as *mut i16) = orient;
+                    if DocumentPropertiesW(0, name.as_ptr(), name.as_ptr(), dm, dm, DM_IN_BUFFER | DM_OUT_BUFFER) == 1 {
+                        let hdc = CreateDCW(driver.as_ptr(), name.as_ptr(), null(), dm as *const c_void);
+                        if hdc != 0 {
+                            return Ok(PrinterDc { hdc });
+                        }
+                    }
+                }
+            }
+        }
+        // il driver non ha accettato il verso: si usa la stampante così com'è
+        Self::open(printer)
     }
 
     /// Risoluzione (dpi) in orizzontale e verticale.

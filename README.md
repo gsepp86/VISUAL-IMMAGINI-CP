@@ -1,9 +1,5 @@
 # Visualizzatore Immagini CP
 
-## Se vuoi contribuire al mio lavoro ti lascio in basso il pulsante per contribuire anche con una piccola donazione simbolica visto che una app così utile gratis per sempre non la trovi ovunque apprezzo il gesto ;-)
-
-[![Donate via PayPal](https://img.shields.io/badge/Donate-PayPal-blue.svg?logo=paypal)](https://paypal.me/PeppeCP)
-
 Lettore immagini opensource creato da Peppe CP in collaborazione con IA.
 
 Semplice come il Visualizzatore foto di Windows 7, ma moderno e veloce. Scritto in Rust.
