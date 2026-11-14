@@ -1,6 +1,6 @@
 [package]
 name = "visualizzatore-immagini-cp"
-version = "2.2.0"
+version = "2.6.0"
 edition = "2021"
 authors = ["Peppe CP"]
 description = "Visualizzatore Immagini CP - lettore immagini opensource creato da Peppe CP in collaborazione con IA"
@@ -11,6 +11,8 @@ readme = "README.md"
 # Interfaccia grafica (accelerata dalla GPU, nessuna dipendenza da runtime)
 eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
 egui = "0.31"
+# Controllo degli aggiornamenti (solo quando l'utente preme "Cerca aggiornamenti")
+ureq = "2.10"
 # Decodifica immagini (solo Rust, niente DLL esterne)
 image = { version = "0.25", default-features = false, features = [
     "jpeg", "png", "gif", "bmp", "ico", "tiff", "webp", "tga", "dds", "hdr", "exr", "pnm", "qoi", "ff",

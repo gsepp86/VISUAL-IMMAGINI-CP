@@ -6,7 +6,7 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 use image::imageops::{self, FilterType};
-use image::{DynamicImage, RgbImage, RgbaImage};
+use image::{DynamicImage, Rgb, RgbImage, RgbaImage};
 
 use crate::loader;
 use crate::util;
@@ -25,6 +25,10 @@ pub struct Job {
     pub printer: String,
     pub items: Vec<Item>,
     pub per_page: usize,
+    /// copie della stessa foto nello stesso foglio (1 = nessuna ripetizione)
+    pub repeat: u32,
+    /// poster: (fogli in orizzontale, fogli in verticale); la foto è distribuita su tutti i fogli
+    pub poster: Option<(u32, u32)>,
     pub orientation: Orientation,
     pub margin_mm: f32,
     pub gap_mm: f32,
@@ -142,13 +146,18 @@ fn run_inner(job: &Job, cancel: &AtomicBool, tx: &Sender<Msg>, notify: &dyn Fn()
     let gap = (job.gap_mm * px_per_mm).round() as i32;
     let photo_px = job.photo_mm.map(|(w, h)| (w * px_per_mm, h * px_per_mm));
 
-    let total = job.items.len() * job.copies.max(1) as usize;
-    let per_page = job.per_page.max(1);
+    if let Some((cols, rows)) = job.poster {
+        return run_poster(job, cols, rows, &dc, (cw, ch), (pw, ph), cancel, tx, notify);
+    }
+    let repeat = job.repeat.max(1) as usize;
+    let per_page = util::cells_per_page(job.per_page, repeat);
+    let pages = util::sheet_pages(&job.items, job.per_page, repeat);
+    let total = pages.len() * job.copies.max(1) as usize;
     dc.start_doc("Visualizzatore Immagini CP")?;
 
     let mut done = 0usize;
     // ogni copia ripete tutte le pagine nello stesso ordine
-    let order: Vec<&[Item]> = (0..job.copies.max(1)).flat_map(|_| job.items.chunks(per_page)).collect();
+    let order: Vec<&[Item]> = (0..job.copies.max(1)).flat_map(|_| pages.iter().map(|p| p.as_slice())).collect();
     for chunk in order {
         if cancel.load(Ordering::Relaxed) {
             dc.abort_doc();
@@ -170,12 +179,87 @@ fn run_inner(job: &Job, cancel: &AtomicBool, tx: &Sender<Msg>, notify: &dyn Fn()
             dc.abort_doc();
             return Err(e);
         }
-        done += chunk.len();
+        done += 1;
         let _ = tx.send(Msg::Progress { done, total });
         notify();
     }
     dc.end_doc();
     Ok(true)
+}
+
+/// Poster: la stessa foto distribuita su cols x rows fogli, uno per posizione, in ordine di lettura.
+#[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
+fn run_poster(
+    job: &Job,
+    cols: u32,
+    rows: u32,
+    dc: &crate::winprint::PrinterDc,
+    (cw, ch): (i32, i32),
+    (pw, ph): (i32, i32),
+    cancel: &AtomicBool,
+    tx: &Sender<Msg>,
+    notify: &dyn Fn(),
+) -> Result<bool, String> {
+    let Some((path, rot, crop)) = job.items.first().cloned() else {
+        return Err("Nessuna immagine da stampare.".to_string());
+    };
+    let (cols, rows) = (cols.max(1) as i32, rows.max(1) as i32);
+    // area del poster: tutti i fogli affiancati (ogni foglio è la sua area stampabile)
+    let (wt, ht) = (cw * cols, ch * rows);
+    let img = load_for_print(&path, rot, crop, wt.max(ht) as u32)?;
+    let (turn, place) = util::place_photo(util::RectI { x: 0, y: 0, w: wt, h: ht }, img.width(), img.height(), None);
+    let img = if turn { img.rotate90() } else { img };
+    let img = img.resize_exact(place.w as u32, place.h as u32, FilterType::Lanczos3).to_rgb8();
+    let lut = util::tone_lut(job.tone.0, job.tone.1);
+    let copies = job.copies.max(1);
+    let total = (cols * rows) as usize * copies as usize;
+    dc.start_doc("Visualizzatore Immagini CP")?;
+    let mut done = 0usize;
+    for _ in 0..copies {
+        for row in 0..rows {
+            for col in 0..cols {
+                if cancel.load(Ordering::Relaxed) {
+                    dc.abort_doc();
+                    return Ok(false);
+                }
+                let sheet = poster_tile(&img, place, col * cw, row * ch, cw, ch, &lut);
+                let page_result = (|| -> Result<(), String> {
+                    dc.start_page()?;
+                    dc.draw_rgb(sheet.width() as i32, sheet.height() as i32, sheet.as_raw(), pw, ph)?;
+                    dc.end_page()
+                })();
+                if let Err(e) = page_result {
+                    dc.abort_doc();
+                    return Err(e);
+                }
+                done += 1;
+                let _ = tx.send(Msg::Progress { done, total });
+                notify();
+            }
+        }
+    }
+    dc.end_doc();
+    Ok(true)
+}
+
+/// Parte del poster che cade in un foglio. `place` è la foto nel poster, (tx, ty) l'angolo del foglio.
+#[cfg(windows)]
+fn poster_tile(img: &RgbImage, place: util::RectI, tx: i32, ty: i32, cw: i32, ch: i32, lut: &[u8; 256]) -> RgbImage {
+    let mut out = RgbImage::from_pixel(cw as u32, ch as u32, Rgb([255, 255, 255]));
+    let x0 = place.x.max(tx);
+    let y0 = place.y.max(ty);
+    let x1 = (place.x + place.w).min(tx + cw);
+    let y1 = (place.y + place.h).min(ty + ch);
+    if x1 <= x0 || y1 <= y0 {
+        return out;
+    }
+    let mut part = imageops::crop_imm(img, (x0 - place.x) as u32, (y0 - place.y) as u32, (x1 - x0) as u32, (y1 - y0) as u32).to_image();
+    for px in part.pixels_mut() {
+        px.0 = [lut[px.0[0] as usize], lut[px.0[1] as usize], lut[px.0[2] as usize]];
+    }
+    imageops::overlay(&mut out, &part, (x0 - tx) as i64, (y0 - ty) as i64);
+    out
 }
 
 /// Compone una pagina intera (RGB) di dimensioni esatte `cw` x `ch`.

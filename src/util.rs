@@ -327,6 +327,34 @@ pub fn page_count(total: usize, per_page: usize) -> usize {
     (total + p - 1) / p
 }
 
+/// Posizioni occupate in ogni foglio. Con più copie della stessa foto il foglio ha una posizione per copia.
+pub fn cells_per_page(per_page: usize, repeat: usize) -> usize {
+    if repeat > 1 {
+        repeat
+    } else {
+        per_page.max(1)
+    }
+}
+
+/// Fogli di una stampa, con le immagini da mettere in ogni foglio.
+/// Con la ripetizione ogni foto ha un foglio con `repeat` copie; altrimenti N immagini per foglio.
+pub fn sheet_pages<T: Clone>(items: &[T], per_page: usize, repeat: usize) -> Vec<Vec<T>> {
+    if repeat > 1 {
+        items.iter().map(|it| vec![it.clone(); repeat]).collect()
+    } else {
+        items.chunks(per_page.max(1)).map(|c| c.to_vec()).collect()
+    }
+}
+
+/// Numero di fogli per `total` immagini (vedi `sheet_pages`).
+pub fn sheet_count(total: usize, per_page: usize, repeat: usize) -> usize {
+    if repeat > 1 {
+        total
+    } else {
+        page_count(total, per_page)
+    }
+}
+
 pub fn human_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     let b = bytes as f64;
@@ -520,5 +548,90 @@ mod tests {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(2048), "2 KB");
         assert_eq!(human_size(3 * 1024 * 1024), "3.0 MB");
+    }
+}
+
+/// Valore di un campo stringa in un JSON semplice, es. "tag_name":"v2.7.0".
+pub fn json_string_field(body: &str, key: &str) -> Option<String> {
+    let pat = format!("\"{}\"", key);
+    let rest = &body[body.find(&pat)? + pat.len()..];
+    let rest = rest.trim_start().strip_prefix(':')?.trim_start().strip_prefix('"')?;
+    Some(rest[..rest.find('"')?].to_string())
+}
+
+/// Numeri di versione di una stringa come "v2.6.0" o "2.6". None se non è una versione.
+pub fn parse_version(v: &str) -> Option<Vec<u64>> {
+    let v = v.trim().trim_start_matches(|c| c == 'v' || c == 'V');
+    let parts: Option<Vec<u64>> = v.split('.').map(|p| p.trim().parse().ok()).collect();
+    parts.filter(|p| !p.is_empty())
+}
+
+/// true se la versione remota è più recente di quella locale.
+pub fn is_newer_version(remote: &str, local: &str) -> bool {
+    let (Some(mut r), Some(mut l)) = (parse_version(remote), parse_version(local)) else {
+        return false;
+    };
+    let n = r.len().max(l.len()).max(3);
+    r.resize(n, 0);
+    l.resize(n, 0);
+    r > l
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+
+    #[test]
+    fn legge_il_tag_della_release() {
+        let body = r#"{"url":"x","tag_name":"v2.7.0","name":"Versione 2.7.0"}"#;
+        assert_eq!(json_string_field(body, "tag_name").as_deref(), Some("v2.7.0"));
+        let spaced = "{\n  \"tag_name\": \"v2.6.1\"\n}";
+        assert_eq!(json_string_field(spaced, "tag_name").as_deref(), Some("v2.6.1"));
+        assert_eq!(json_string_field("{}", "tag_name"), None);
+    }
+
+    #[test]
+    fn confronta_le_versioni() {
+        assert!(is_newer_version("v2.7.0", "2.6.0"));
+        assert!(is_newer_version("v3.0", "2.6.0"));
+        assert!(!is_newer_version("v2.6.0", "2.6.0"));
+        assert!(!is_newer_version("v2.5.9", "2.6.0"));
+        assert!(is_newer_version("v2.6.0.1", "2.6.0"));
+        assert!(!is_newer_version("beta", "2.6.0"));
+    }
+}
+
+#[cfg(test)]
+mod repeat_tests {
+    use super::*;
+
+    #[test]
+    fn ripetizione_una_pagina_per_foto() {
+        let items = vec![1, 2, 3];
+        let pages = sheet_pages(&items, 4, 4);
+        assert_eq!(pages.len(), 3);
+        assert!(pages.iter().all(|p| p.len() == 4));
+        assert_eq!(pages[1], vec![2, 2, 2, 2]);
+        assert_eq!(sheet_count(3, 4, 4), 3);
+        assert_eq!(cells_per_page(1, 4), 4);
+    }
+
+    #[test]
+    fn senza_ripetizione_si_raggruppa_per_pagina() {
+        let items: Vec<u32> = (0..10).collect();
+        let pages = sheet_pages(&items, 4, 1);
+        assert_eq!(pages.len(), 3);
+        assert_eq!(pages[2], vec![8, 9]);
+        assert_eq!(sheet_count(10, 4, 1), 3);
+        assert_eq!(cells_per_page(4, 1), 4);
+        assert_eq!(cells_per_page(0, 1), 1);
+    }
+
+    #[test]
+    fn ripetizione_celle_dentro_il_foglio() {
+        for rep in 2..=16usize {
+            let cells = cell_rects(2100, 2970, grid_for(rep, false).0, grid_for(rep, false).1, 50, 30);
+            assert!(cells.len() >= rep);
+        }
     }
 }

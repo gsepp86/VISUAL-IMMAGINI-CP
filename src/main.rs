@@ -144,9 +144,29 @@ struct PrintUi {
     copies: u32,
     /// valori con cui sono state preparate le anteprime
     tone_applied: Option<(f32, f32)>,
+    /// copie della stessa foto nel foglio (1 = nessuna ripetizione)
+    repeat: u32,
+    /// dimensione personalizzata in cm (larghezza, altezza)
+    custom_cm: (f32, f32),
+    /// usa queste impostazioni come predefinite all'avvio
+    use_defaults: bool,
+    /// margine preso dalle predefinite: al primo rilevamento della stampante non va sovrascritto
+    margin_locked: bool,
+    /// poster su più fogli
+    poster: bool,
+    poster_cols: u32,
+    poster_rows: u32,
+    /// ultime impostazioni predefinite viste (per scrivere su file solo le modifiche)
+    saved_prefs: String,
 }
 
 impl PrintUi {
+    /// Margine da applicare all'area stampabile: il margine è misurato dal bordo del foglio,
+    /// e la stampante non stampa nei primi `printer_margin_mm` mm, che sono già esclusi.
+    fn inner_margin_mm(&self) -> f32 {
+        (self.margin_mm - self.printer_margin_mm).max(0.0)
+    }
+
     fn new() -> Self {
         PrintUi {
             open: false,
@@ -167,6 +187,14 @@ impl PrintUi {
             brightness: 0.0,
             contrast: 0.0,
             tone_applied: None,
+            repeat: 1,
+            custom_cm: (10.0, 15.0),
+            use_defaults: false,
+            margin_locked: false,
+            saved_prefs: String::new(),
+            poster: false,
+            poster_cols: 2,
+            poster_rows: 2,
         }
     }
 }
@@ -208,6 +236,10 @@ struct App {
     rotations: HashMap<PathBuf, u8>,
     acts: Vec<Act>,
     show_about: bool,
+    /// controllo aggiornamenti in corso (risposta dal thread di rete)
+    update_rx: Option<Receiver<UpdateCheck>>,
+    /// ultimo esito del controllo aggiornamenti
+    update_result: Option<UpdateCheck>,
     show_settings: bool,
     light_theme: bool,
     show_strip: bool,
@@ -308,6 +340,8 @@ impl App {
             cc.egui_ctx.load_texture("app-icon", ci, egui::TextureOptions::LINEAR)
         });
 
+        let mut print_ui = PrintUi::new();
+        load_print_prefs(&mut print_ui);
         let mut app = App {
             tabs: Vec::new(),
             active: 0,
@@ -319,10 +353,12 @@ impl App {
             rotations: HashMap::new(),
             acts: Vec::new(),
             show_about: false,
+            update_rx: None,
+            update_result: None,
             show_settings: false,
             light_theme: col::is_light(),
             show_strip: true,
-            print: PrintUi::new(),
+            print: print_ui,
             icon_tex,
             last_full_req: Vec::new(),
             last_preview_req: Vec::new(),
@@ -663,7 +699,7 @@ impl App {
             self.print_tex.clear();
         }
         let lut = util::tone_lut(want.0, want.1);
-        for (path, _, _) in self.print_items().into_iter().take(self.print.per_page) {
+        for (path, _, _) in self.first_sheet_items() {
             if self.print_tex.contains_key(&path) {
                 continue;
             }
@@ -757,11 +793,25 @@ impl App {
         }
     }
 
+    /// Foto del primo foglio: con la ripetizione è la prima foto copiata nelle posizioni del foglio.
+    fn first_sheet_items(&self) -> Vec<print::Item> {
+        if self.print.poster {
+            return self.print_items().into_iter().take(1).collect();
+        }
+        let rep = self.print.repeat.max(1) as usize;
+        let cells = util::cells_per_page(self.print.per_page, rep);
+        let items = self.print_items();
+        if rep > 1 {
+            items.into_iter().take(1).cycle().take(cells).collect()
+        } else {
+            items.into_iter().take(cells).collect()
+        }
+    }
+
     /// Foto della prima pagina di stampa, con rotazione e ritaglio, per l'anteprima reale.
     fn preview_items(&self) -> Vec<PreviewItem> {
-        self.print_items()
+        self.first_sheet_items()
             .into_iter()
-            .take(self.print.per_page)
             .map(|(path, rot, crop)| {
                 let (w, h) = match self.full.get(&path) {
                     Some(e) if e.orig.0 > 0 => e.orig,
@@ -1576,6 +1626,14 @@ impl App {
         }
         let mut open = true;
         let icon = self.icon_tex.as_ref().map(|t| t.id());
+        let checking = self.update_rx.is_some();
+        let status = match &self.update_result {
+            Some(UpdateCheck::Current) => Some((format!("Hai già l'ultima versione ({}).", VERSION), None)),
+            Some(UpdateCheck::Newer(v)) => Some((format!("È disponibile la versione {}.", v), Some(()))),
+            Some(UpdateCheck::Failed(e)) => Some((format!("Controllo non riuscito: {}", e), None)),
+            None => None,
+        };
+        let mut start_check = false;
         egui::Window::new("Info")
             .open(&mut open)
             .collapsible(false)
@@ -1602,9 +1660,35 @@ impl App {
                     ui.hyperlink_to(egui::RichText::new("Donate via PayPal").strong(), "https://paypal.me/PeppeCP");
                     ui.add_space(6.0);
                     ui.hyperlink_to("Codice sorgente su GitHub", "https://github.com/gsepp86/VISUAL-IMMAGINI-CP");
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(!checking, egui::Button::new("Cerca aggiornamenti")).clicked() {
+                            start_check = true;
+                        }
+                        if checking {
+                            ui.spinner();
+                            ui.label("Controllo in corso…");
+                        }
+                    });
+                    if let Some((text, newer)) = &status {
+                        ui.label(text.clone());
+                        if newer.is_some() {
+                            ui.hyperlink_to(egui::RichText::new("Scarica la nuova versione").strong(), RELEASES_PAGE);
+                        }
+                    }
                     ui.add_space(6.0);
                 });
             });
+        if start_check {
+            let (tx, rx) = channel();
+            let ctx2 = ctx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(check_latest_release());
+                ctx2.request_repaint();
+            });
+            self.update_rx = Some(rx);
+            self.update_result = None;
+        }
         self.show_about = open;
     }
 
@@ -1678,15 +1762,25 @@ impl App {
             return;
         }
         let copies = self.print.copies.max(1);
-        let total = items.len() * copies as usize;
+        let repeat = self.print.repeat.max(1);
+        let poster = self.print.poster.then_some((self.print.poster_cols.max(1), self.print.poster_rows.max(1)));
+        let (items, total) = match poster {
+            Some((c, r)) => (items.into_iter().take(1).collect::<Vec<_>>(), (c * r) as usize * copies as usize),
+            None => {
+                let t = util::sheet_pages(&items, self.print.per_page, repeat as usize).len() * copies as usize;
+                (items, t)
+            }
+        };
         let job = print::Job {
             printer,
             items,
             per_page: self.print.per_page,
+            repeat,
+            poster,
             orientation: self.print.orientation,
-            margin_mm: self.print.margin_mm,
+            margin_mm: self.print.inner_margin_mm(),
             gap_mm: self.print.gap_mm,
-            photo_mm: self.print.photo.mm(),
+            photo_mm: self.print.photo.mm(self.print.custom_cm),
             tone: (self.print.brightness, self.print.contrast),
             copies,
         };
@@ -1716,9 +1810,11 @@ impl App {
         if self.print.page_for != sel_name {
             self.print.page_mm = print::printer_page_mm(sel_name.as_deref());
             self.print.printer_margin_mm = print::printer_min_margin_mm(sel_name.as_deref());
-            if self.print.photo == PhotoFmt::Page {
+            let first = self.print.page_for.is_none();
+            if !(first && self.print.margin_locked) {
                 self.print.margin_mm = self.print.printer_margin_mm.min(30.0);
             }
+            self.print.margin_locked = false;
             self.print.page_for = sel_name.clone();
         }
         self.refresh_print_tex(ctx);
@@ -1736,6 +1832,15 @@ impl App {
                 .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
                     ui.set_min_width(520.0);
+                    // testo più grande nella finestra di stampa, per riempire lo spazio disponibile
+                    {
+                        let style = ui.style_mut();
+                        for font in style.text_styles.values_mut() {
+                            font.size *= 1.25;
+                        }
+                        style.spacing.interact_size.y *= 1.25;
+                        style.spacing.item_spacing *= 1.15;
+                    }
                     if !cfg!(windows) {
                         ui.colored_label(Color32::from_rgb(255, 190, 80), "La stampa è disponibile solo su Windows.");
                     }
@@ -1748,11 +1853,6 @@ impl App {
                             }
                         });
                     });
-                    if ui.button("Preferenze e driver della stampante…").clicked() {
-                        if let Some(n) = &sel_name {
-                            open_printer_driver(n);
-                        }
-                    }
                     ui.horizontal(|ui| {
                         ui.label("Tema:");
                         ui.radio_value(&mut light, false, "Scuro");
@@ -1769,12 +1869,25 @@ impl App {
                             ui.add_space(6.0);
 
                             ui.label(egui::RichText::new("Immagini per pagina").strong());
-                            ui.horizontal_wrapped(|ui| {
-                                for &n in util::PER_PAGE_CHOICES {
-                                    let label = if n == 1 { "1".to_string() } else { format!("{} in 1", n) };
-                                    ui.selectable_value(&mut p.per_page, n, label);
-                                }
+                            ui.add_enabled_ui(p.repeat <= 1 && !p.poster, |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    for &n in util::PER_PAGE_CHOICES {
+                                        let label = if n == 1 { "1".to_string() } else { format!("{} in 1", n) };
+                                        ui.selectable_value(&mut p.per_page, n, label);
+                                    }
+                                });
                             });
+                            ui.horizontal(|ui| {
+                                ui.label("Stessa foto più volte nel foglio");
+                                ui.add(egui::DragValue::new(&mut p.repeat).range(1..=16));
+                            });
+                            if p.repeat > 1 {
+                                ui.label(
+                                    egui::RichText::new(format!("Ogni foto occupa {} posizioni nel foglio", p.repeat))
+                                        .color(col::text_dim())
+                                        .size(12.0),
+                                );
+                            }
                             ui.add_space(6.0);
 
                             ui.label(egui::RichText::new("Orientamento").strong());
@@ -1785,34 +1898,57 @@ impl App {
                             });
                             ui.add_space(6.0);
                             ui.add(egui::Slider::new(&mut p.margin_mm, 0.0..=30.0).text("Margine (mm)"));
-                            if p.photo == PhotoFmt::Page {
+                            {
                                 ui.label(
-                                    egui::RichText::new(format!("Margine minimo della stampante: {:.1} mm", p.printer_margin_mm))
+                                    egui::RichText::new(format!("Margine minimo della stampante: {:.1} mm (misurato dal bordo del foglio)", p.printer_margin_mm))
                                         .color(col::text_dim())
                                         .size(12.0),
                                 );
                             }
                             ui.add(egui::Slider::new(&mut p.gap_mm, 0.0..=20.0).text("Spazio tra le foto (mm)"));
                             ui.add_space(6.0);
-                            ui.label(egui::RichText::new("Regolazione foto").strong());
-                            ui.add(egui::Slider::new(&mut p.brightness, -1.0..=1.0).text("Chiaro / scuro"));
-                            ui.add(egui::Slider::new(&mut p.contrast, -1.0..=1.0).text("Contrasto"));
-                            ui.add_space(6.0);
                             ui.label(egui::RichText::new("Dimensione foto").strong());
                             let photo_before = p.photo;
-                            for f in [PhotoFmt::Page, PhotoFmt::Cm10x15, PhotoFmt::Cm13x18] {
+                            for f in [PhotoFmt::Page, PhotoFmt::Cm10x15, PhotoFmt::Cm13x18, PhotoFmt::Custom] {
                                 ui.radio_value(&mut p.photo, f, f.label());
+                            }
+                            if p.photo == PhotoFmt::Custom {
+                                ui.horizontal(|ui| {
+                                    ui.label("Larghezza");
+                                    ui.add(egui::DragValue::new(&mut p.custom_cm.0).range(1.0..=60.0).speed(0.1).suffix(" cm"));
+                                    ui.label("Altezza");
+                                    ui.add(egui::DragValue::new(&mut p.custom_cm.1).range(1.0..=60.0).speed(0.1).suffix(" cm"));
+                                });
                             }
                             if p.photo != photo_before && p.photo == PhotoFmt::Page {
                                 p.margin_mm = p.printer_margin_mm.min(30.0);
                             }
                             ui.add_space(6.0);
+                            ui.checkbox(&mut p.poster, "Poster su più fogli");
+                            if p.poster {
+                                ui.horizontal(|ui| {
+                                    ui.label("In orizzontale");
+                                    ui.add(egui::DragValue::new(&mut p.poster_cols).range(1..=6));
+                                    ui.label("In verticale");
+                                    ui.add(egui::DragValue::new(&mut p.poster_rows).range(1..=6));
+                                });
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "Una sola immagine distribuita su {} fogli. Per unirli senza strisce, sovrapponi i bordi di circa {:.1} mm.",
+                                        p.poster_cols * p.poster_rows,
+                                        2.0 * p.printer_margin_mm
+                                    ))
+                                    .color(col::text_dim())
+                                    .size(12.0),
+                                );
+                            }
                             ui.horizontal(|ui| {
                                 ui.label("Numero di copie");
                                 ui.add(egui::DragValue::new(&mut p.copies).range(1..=99));
                             });
+                            ui.checkbox(&mut p.use_defaults, "Usa queste impostazioni come predefinite");
                             ui.label(egui::RichText::new(cur_info.clone()).color(col::text_dim()).size(12.0));
-                            if let Some((w, h)) = p.photo.mm() {
+                            if let Some((w, h)) = p.photo.mm(p.custom_cm) {
                                 ui.label(
                                     egui::RichText::new(format!(
                                         "Ogni foto a {:.0}×{:.0} cm, ridotta in proporzione se il foglio è più piccolo",
@@ -1828,13 +1964,38 @@ impl App {
                         ui.vertical(|ui| {
                             ui.label(egui::RichText::new("Anteprima").strong());
                             ui.label(egui::RichText::new("Anteprima reale: prima pagina, come verrà stampata").color(col::text_dim()).size(12.0));
-                            draw_page_preview(ui, &preview_items, p.page_mm, p.per_page, p.orientation, p.margin_mm, p.gap_mm, p.photo.mm());
-                            let pages = util::page_count(count, p.per_page);
-                            ui.label(egui::RichText::new(format!("{} immagini → {} pagine", count, pages)).color(col::text_dim()));
+                            let cells = util::cells_per_page(p.per_page, p.repeat as usize);
+                            if p.poster {
+                                draw_poster_preview(ui, &preview_items, p.page_mm, p.poster_cols, p.poster_rows, p.orientation);
+                            } else {
+                                draw_page_preview(ui, &preview_items, p.page_mm, cells, p.orientation, p.inner_margin_mm(), p.gap_mm, p.photo.mm(p.custom_cm));
+                            }
+                            let pages = if p.poster {
+                                (p.poster_cols * p.poster_rows) as usize
+                            } else {
+                                util::sheet_count(count, p.per_page, p.repeat as usize)
+                            };
+                            let testo = if p.poster {
+                                format!("Poster: {} fogli", pages)
+                            } else {
+                                format!("{} immagini → {} pagine", count, pages)
+                            };
+                            ui.label(egui::RichText::new(testo).color(col::text_dim()));
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new("Regolazione foto").strong());
+                            ui.add(egui::Slider::new(&mut p.brightness, -1.0..=1.0).text("Chiaro / scuro"));
+                            ui.add(egui::Slider::new(&mut p.contrast, -1.0..=1.0).text("Contrasto"));
                         });
                     });
                     ui.separator();
 
+                    ui.horizontal(|ui| {
+                        if ui.button("Preferenze e driver della stampante…").clicked() {
+                            if let Some(n) = &sel_name {
+                                open_printer_driver(n);
+                            }
+                        }
+                    });
                     if let Some(run) = &p.running {
                         let frac = if run.total > 0 { run.done as f32 / run.total as f32 } else { 0.0 };
                         ui.add(egui::ProgressBar::new(frac).text(format!("Stampa in corso… {} di {}", run.done, run.total)));
@@ -1856,6 +2017,11 @@ impl App {
                         });
                     }
                 });
+        }
+        let key = print_prefs_key(&self.print);
+        if key != self.print.saved_prefs {
+            save_print_prefs(&self.print);
+            self.print.saved_prefs = key;
         }
         if light != self.light_theme {
             self.light_theme = light;
@@ -1881,6 +2047,12 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // esito del controllo aggiornamenti, quando arriva dal thread di rete
+        let got = self.update_rx.as_ref().and_then(|rx| rx.try_recv().ok());
+        if let Some(res) = got {
+            self.update_result = Some(res);
+            self.update_rx = None;
+        }
         // alla chiusura, se ci sono ritagli, si chiede cosa farne
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && !self.crops.is_empty() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -1976,23 +2148,186 @@ fn shrink(ci: &egui::ColorImage, max: usize) -> egui::ColorImage {
     img
 }
 
+/// Pagina con tutte le versioni pubblicate.
+const RELEASES_PAGE: &str = "https://github.com/gsepp86/VISUAL-IMMAGINI-CP/releases";
+/// Ultima versione pubblicata (solo lettura, nessun dato dell'utente viene inviato).
+const RELEASES_API: &str = "https://api.github.com/repos/gsepp86/VISUAL-IMMAGINI-CP/releases/latest";
+
+/// Esito del controllo aggiornamenti.
+enum UpdateCheck {
+    Current,
+    Newer(String),
+    Failed(String),
+}
+
+/// Legge l'ultima release su GitHub e la confronta con la versione in uso (bloccante: va in un thread).
+fn check_latest_release() -> UpdateCheck {
+    let resp = ureq::get(RELEASES_API)
+        .set("User-Agent", "VisualizzatoreImmaginiCP")
+        .set("Accept", "application/vnd.github+json")
+        .timeout(std::time::Duration::from_secs(10))
+        .call();
+    let body = match resp {
+        Ok(r) => match r.into_string() {
+            Ok(b) => b,
+            Err(e) => return UpdateCheck::Failed(e.to_string()),
+        },
+        Err(ureq::Error::Status(404, _)) => return UpdateCheck::Failed("nessuna versione pubblicata".to_string()),
+        Err(e) => return UpdateCheck::Failed(e.to_string()),
+    };
+    match util::json_string_field(&body, "tag_name") {
+        Some(tag) if util::is_newer_version(&tag, VERSION) => {
+            UpdateCheck::Newer(tag.trim_start_matches(|c| c == 'v' || c == 'V').to_string())
+        }
+        Some(_) => UpdateCheck::Current,
+        None => UpdateCheck::Failed("risposta non valida".to_string()),
+    }
+}
+
 /// File delle impostazioni (%APPDATA%\VisualizzatoreImmaginiCP\impostazioni.txt).
 fn settings_file() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("VisualizzatoreImmaginiCP").join("impostazioni.txt"))
 }
 
-fn load_light_theme() -> bool {
+/// Legge il file delle impostazioni come coppie chiave=valore.
+fn read_settings() -> std::collections::BTreeMap<String, String> {
     settings_file()
         .and_then(|f| fs::read_to_string(f).ok())
-        .is_some_and(|t| t.lines().any(|l| l.trim() == "tema=chiaro"))
+        .map(|t| {
+            t.lines()
+                .filter_map(|l| l.split_once('='))
+                .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-fn save_light_theme(light: bool) {
+fn write_settings(map: &std::collections::BTreeMap<String, String>) {
     let Some(file) = settings_file() else { return };
     if let Some(dir) = file.parent() {
         let _ = fs::create_dir_all(dir);
     }
-    let _ = fs::write(file, if light { "tema=chiaro\n" } else { "tema=scuro\n" });
+    let text: String = map.iter().map(|(k, v)| format!("{}={}\n", k, v)).collect();
+    let _ = fs::write(file, text);
+}
+
+fn load_light_theme() -> bool {
+    read_settings().get("tema").is_some_and(|v| v == "chiaro")
+}
+
+fn save_light_theme(light: bool) {
+    let mut map = read_settings();
+    map.insert("tema".to_string(), if light { "chiaro" } else { "scuro" }.to_string());
+    write_settings(&map);
+}
+
+/// Impostazioni di stampa salvabili come predefinite (chiavi "stampa.*").
+fn print_prefs(p: &PrintUi) -> Vec<(&'static str, String)> {
+    let orient = match p.orientation {
+        print::Orientation::Auto => "auto",
+        print::Orientation::Portrait => "verticale",
+        print::Orientation::Landscape => "orizzontale",
+    };
+    let formato = match p.photo {
+        PhotoFmt::Page => "pagina",
+        PhotoFmt::Cm10x15 => "10x15",
+        PhotoFmt::Cm13x18 => "13x18",
+        PhotoFmt::Custom => "personalizzato",
+    };
+    vec![
+        ("stampa.perpagina", p.per_page.to_string()),
+        ("stampa.ripeti", p.repeat.to_string()),
+        ("stampa.orientamento", orient.to_string()),
+        ("stampa.margine", p.margin_mm.to_string()),
+        ("stampa.spazio", p.gap_mm.to_string()),
+        ("stampa.formato", formato.to_string()),
+        ("stampa.personalizzato", format!("{};{}", p.custom_cm.0, p.custom_cm.1)),
+        ("stampa.poster", if p.poster { "1" } else { "0" }.to_string()),
+        ("stampa.poster_colonne", p.poster_cols.to_string()),
+        ("stampa.poster_righe", p.poster_rows.to_string()),
+        ("stampa.chiaro", p.brightness.to_string()),
+        ("stampa.contrasto", p.contrast.to_string()),
+    ]
+}
+
+/// Riassunto delle impostazioni di stampa: serve a scrivere su file solo quando cambiano.
+fn print_prefs_key(p: &PrintUi) -> String {
+    let mut s = format!("predefinite={}\n", p.use_defaults);
+    for (k, v) in print_prefs(p) {
+        s.push_str(&format!("{}={}\n", k, v));
+    }
+    s
+}
+
+fn save_print_prefs(p: &PrintUi) {
+    let mut map = read_settings();
+    map.insert("stampa.predefinite".to_string(), if p.use_defaults { "1" } else { "0" }.to_string());
+    if p.use_defaults {
+        for (k, v) in print_prefs(p) {
+            map.insert(k.to_string(), v);
+        }
+    }
+    write_settings(&map);
+}
+
+/// Valore di una chiave del file delle impostazioni.
+fn setting<'a>(map: &'a std::collections::BTreeMap<String, String>, k: &str) -> Option<&'a str> {
+    map.get(k).map(String::as_str)
+}
+
+/// Carica le impostazioni di stampa predefinite, se l'utente le ha attivate.
+fn load_print_prefs(p: &mut PrintUi) {
+    let map = read_settings();
+    if setting(&map, "stampa.predefinite") != Some("1") {
+        return;
+    }
+    let num = |k: &str| setting(&map, k).and_then(|v| v.parse::<f32>().ok());
+    p.use_defaults = true;
+    if let Some(v) = setting(&map, "stampa.perpagina").and_then(|v| v.parse::<usize>().ok()) {
+        if util::PER_PAGE_CHOICES.contains(&v) {
+            p.per_page = v;
+        }
+    }
+    if let Some(v) = setting(&map, "stampa.ripeti").and_then(|v| v.parse::<u32>().ok()) {
+        p.repeat = v.clamp(1, 16);
+    }
+    p.orientation = match setting(&map, "stampa.orientamento") {
+        Some("verticale") => print::Orientation::Portrait,
+        Some("orizzontale") => print::Orientation::Landscape,
+        _ => print::Orientation::Auto,
+    };
+    if let Some(v) = num("stampa.margine") {
+        p.margin_mm = v.clamp(0.0, 30.0);
+    }
+    if let Some(v) = num("stampa.spazio") {
+        p.gap_mm = v.clamp(0.0, 20.0);
+    }
+    p.photo = match setting(&map, "stampa.formato") {
+        Some("10x15") => PhotoFmt::Cm10x15,
+        Some("13x18") => PhotoFmt::Cm13x18,
+        Some("personalizzato") => PhotoFmt::Custom,
+        _ => PhotoFmt::Page,
+    };
+    if let Some((w, h)) = setting(&map, "stampa.personalizzato").and_then(|v| v.split_once(';')) {
+        if let (Ok(w), Ok(h)) = (w.trim().parse::<f32>(), h.trim().parse::<f32>()) {
+            p.custom_cm = (w.clamp(1.0, 60.0), h.clamp(1.0, 60.0));
+        }
+    }
+    p.poster = setting(&map, "stampa.poster") == Some("1");
+    if let Some(v) = setting(&map, "stampa.poster_colonne").and_then(|v| v.parse::<u32>().ok()) {
+        p.poster_cols = v.clamp(1, 6);
+    }
+    if let Some(v) = setting(&map, "stampa.poster_righe").and_then(|v| v.parse::<u32>().ok()) {
+        p.poster_rows = v.clamp(1, 6);
+    }
+    if let Some(v) = num("stampa.chiaro") {
+        p.brightness = v.clamp(-1.0, 1.0);
+    }
+    if let Some(v) = num("stampa.contrasto") {
+        p.contrast = v.clamp(-1.0, 1.0);
+    }
+    p.margin_locked = true;
+    p.saved_prefs = print_prefs_key(p);
 }
 
 /// File dei ritagli mantenuti (%APPDATA%\VisualizzatoreImmaginiCP\ritagli.txt).
@@ -2096,8 +2431,8 @@ fn draw_page_preview(
         print::Orientation::Landscape if page_mm.0 < page_mm.1 => (page_mm.1, page_mm.0),
         _ => page_mm,
     };
-    // la pagina entra in 260 x 340 punti
-    let s = (260.0 / pw_mm).min(340.0 / ph_mm);
+    // la pagina entra in 320 x 460 punti
+    let s = (320.0 / pw_mm).min(460.0 / ph_mm);
     let (rect, _) = ui.allocate_exact_size(vec2(pw_mm * s, ph_mm * s), egui::Sense::hover());
     let painter = ui.painter_at(rect.expand(6.0));
     // ombra del foglio, poi foglio bianco con bordo ben visibile
@@ -2138,6 +2473,44 @@ fn draw_page_preview(
     }
 }
 
+/// Anteprima del poster: il primo foglio, con la parte della foto che vi cade.
+fn draw_poster_preview(ui: &mut egui::Ui, items: &[PreviewItem], page_mm: (f32, f32), cols: u32, rows: u32, orientation: print::Orientation) {
+    let (pw_mm, ph_mm) = match orientation {
+        print::Orientation::Portrait if page_mm.0 > page_mm.1 => (page_mm.1, page_mm.0),
+        print::Orientation::Landscape if page_mm.0 < page_mm.1 => (page_mm.1, page_mm.0),
+        _ => page_mm,
+    };
+    let s = (320.0 / pw_mm).min(460.0 / ph_mm);
+    let (rect, _) = ui.allocate_exact_size(vec2(pw_mm * s, ph_mm * s), egui::Sense::hover());
+    let painter = ui.painter_at(rect.expand(6.0));
+    painter.rect_filled(rect.translate(vec2(3.0, 3.0)), 2.0, Color32::from_black_alpha(90));
+    painter.rect_filled(rect, 2.0, Color32::WHITE);
+    painter.rect_stroke(rect, 2.0, Stroke::new(1.5_f32, Color32::from_gray(90)), egui::StrokeKind::Outside);
+
+    // stessa geometria della stampa: il poster è cols x rows fogli, in decimi di millimetro
+    let (cw, ch) = ((pw_mm * 10.0).round() as i32, (ph_mm * 10.0).round() as i32);
+    let (wt, ht) = (cw * cols.max(1) as i32, ch * rows.max(1) as i32);
+    let k = s / 10.0;
+    if let Some(it) = items.first() {
+        let (fw, fh) = it.cropped();
+        let (turn, r) = util::place_photo(util::RectI { x: 0, y: 0, w: wt, h: ht }, fw, fh, None);
+        let shown = Rect::from_min_size(rect.min + vec2(r.x as f32 * k, r.y as f32 * k), vec2(r.w as f32 * k, r.h as f32 * k));
+        let clipped = painter.with_clip_rect(shown.intersect(rect));
+        match it.tex {
+            Some(tex) => {
+                let (rot, c) = it.frame(turn);
+                let full_size = vec2(shown.width() / (c[2] - c[0]), shown.height() / (c[3] - c[1]));
+                let origin = shown.min - vec2(c[0] * full_size.x, c[1] * full_size.y);
+                let full_rect = Rect::from_min_size(origin, full_size);
+                paint_image(&clipped, tex, full_rect.center(), full_size, rot);
+            }
+            None => {
+                clipped.rect_filled(shown, 0.0, Color32::from_rgb(150, 178, 215));
+            }
+        }
+    }
+}
+
 /// Ritaglio a schermo intero (nessun ritaglio): [x0, y0, x1, y1] normalizzati 0..1.
 const FULL_CROP: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 /// Lato minimo di un ritaglio (2% dell'immagine).
@@ -2158,15 +2531,17 @@ enum PhotoFmt {
     Page,
     Cm10x15,
     Cm13x18,
+    Custom,
 }
 
 impl PhotoFmt {
     /// Dimensione in mm (lato corto, lato lungo); None = adatta alla pagina.
-    fn mm(self) -> Option<(f32, f32)> {
+    fn mm(self, custom_cm: (f32, f32)) -> Option<(f32, f32)> {
         match self {
             PhotoFmt::Page => None,
             PhotoFmt::Cm10x15 => Some((100.0, 150.0)),
             PhotoFmt::Cm13x18 => Some((130.0, 180.0)),
+            PhotoFmt::Custom => Some((custom_cm.0 * 10.0, custom_cm.1 * 10.0)),
         }
     }
     fn label(self) -> &'static str {
@@ -2174,6 +2549,7 @@ impl PhotoFmt {
             PhotoFmt::Page => "Adatta al foglio (massimo ingrandimento)",
             PhotoFmt::Cm10x15 => "10×15 cm (in proporzione)",
             PhotoFmt::Cm13x18 => "13×18 cm (in proporzione)",
+            PhotoFmt::Custom => "Personalizzato (in proporzione)",
         }
     }
 }

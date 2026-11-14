@@ -7,7 +7,7 @@ Unicode true
 
 !define APP_NAME "Visualizzatore Immagini CP"
 !define APP_EXE "visualizzatore-immagini-cp.exe"
-!define APP_VERSION "2.2.0"
+!define APP_VERSION "2.6.0"
 !define APP_PUBLISHER "Peppe CP"
 !define PROGID "VisualizzatoreImmaginiCP.Image"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\VisualizzatoreImmaginiCP"
