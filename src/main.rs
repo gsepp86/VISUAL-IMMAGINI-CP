@@ -132,6 +132,8 @@ struct PrintUi {
     selected: usize,
     running: Option<Running>,
     message: String,
+    /// stampa completata: chiede se chiudere la finestra
+    ask_close: bool,
     photo: PhotoFmt,
     /// area stampabile della stampante selezionata (mm), per l'anteprima reale
     page_mm: (f32, f32),
@@ -181,6 +183,7 @@ impl PrintUi {
             running: None,
             message: String::new(),
             photo: PhotoFmt::Page,
+            ask_close: false,
             page_mm: (210.0, 297.0),
             page_for: None,
             printer_margin_mm: 5.0,
@@ -1703,6 +1706,7 @@ impl App {
                     }
                     print::Msg::Done => {
                         self.print.message = "Stampa completata.".to_string();
+                        self.print.ask_close = true;
                         finished = true;
                     }
                     print::Msg::Cancelled => {
@@ -1790,6 +1794,7 @@ impl App {
         let ctx2 = ctx.clone();
         std::thread::spawn(move || print::run(job, cancel2, tx, move || ctx2.request_repaint()));
         self.print.message.clear();
+        self.print.ask_close = false;
         self.print.running = Some(Running { rx, cancel, done: 0, total });
     }
 
@@ -1825,18 +1830,19 @@ impl App {
         let mut light = self.light_theme;
         {
             let p = &mut self.print;
+            // spostabile: parte al centro, poi resta dove l'utente la trascina
             egui::Window::new("Stampa")
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
-                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_pos(ctx.screen_rect().center() - vec2(280.0, 260.0))
                 .show(ctx, |ui| {
                     ui.set_min_width(520.0);
                     // testo più grande nella finestra di stampa, per riempire lo spazio disponibile
                     {
                         let style = ui.style_mut();
                         for font in style.text_styles.values_mut() {
-                            font.size *= 1.25;
+                            font.size *= 1.12;
                         }
                         style.spacing.interact_size.y *= 1.25;
                         style.spacing.item_spacing *= 1.15;
@@ -2005,6 +2011,18 @@ impl App {
                     } else {
                         if !p.message.is_empty() {
                             ui.label(p.message.clone());
+                        }
+                        if p.ask_close {
+                            ui.label("Vuoi chiudere la finestra di stampa?");
+                            ui.horizontal(|ui| {
+                                if ui.button("Sì, chiudi").clicked() {
+                                    close = true;
+                                    p.ask_close = false;
+                                }
+                                if ui.button("No, resta aperta").clicked() {
+                                    p.ask_close = false;
+                                }
+                            });
                         }
                         ui.horizontal(|ui| {
                             let can = cfg!(windows) && !p.printers.is_empty() && count > 0;
@@ -2432,7 +2450,7 @@ fn draw_page_preview(
         _ => page_mm,
     };
     // la pagina entra in 320 x 460 punti
-    let s = (320.0 / pw_mm).min(460.0 / ph_mm);
+    let s = (290.0 / pw_mm).min(420.0 / ph_mm);
     let (rect, _) = ui.allocate_exact_size(vec2(pw_mm * s, ph_mm * s), egui::Sense::hover());
     let painter = ui.painter_at(rect.expand(6.0));
     // ombra del foglio, poi foglio bianco con bordo ben visibile
@@ -2480,7 +2498,7 @@ fn draw_poster_preview(ui: &mut egui::Ui, items: &[PreviewItem], page_mm: (f32, 
         print::Orientation::Landscape if page_mm.0 < page_mm.1 => (page_mm.1, page_mm.0),
         _ => page_mm,
     };
-    let s = (320.0 / pw_mm).min(460.0 / ph_mm);
+    let s = (290.0 / pw_mm).min(420.0 / ph_mm);
     let (rect, _) = ui.allocate_exact_size(vec2(pw_mm * s, ph_mm * s), egui::Sense::hover());
     let painter = ui.painter_at(rect.expand(6.0));
     painter.rect_filled(rect.translate(vec2(3.0, 3.0)), 2.0, Color32::from_black_alpha(90));
