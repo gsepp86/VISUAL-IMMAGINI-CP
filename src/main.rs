@@ -140,10 +140,12 @@ struct PrintUi {
     printer_margin_mm: f32,
     brightness: f32,
     contrast: f32,
+    /// colori, bianco e nero (scala di grigi) o automatico
+    color_mode: print::ColorMode,
     /// numero di copie da stampare
     copies: u32,
     /// valori con cui sono state preparate le anteprime
-    tone_applied: Option<(f32, f32)>,
+    tone_applied: Option<(f32, f32, print::ColorMode)>,
     /// copie della stessa foto nel foglio (1 = nessuna ripetizione)
     repeat: u32,
     /// dimensione personalizzata in cm (larghezza, altezza)
@@ -186,6 +188,7 @@ impl PrintUi {
             printer_margin_mm: 5.0,
             brightness: 0.0,
             contrast: 0.0,
+            color_mode: print::ColorMode::Auto,
             tone_applied: None,
             repeat: 1,
             custom_cm: (10.0, 15.0),
@@ -691,9 +694,9 @@ impl App {
         }
     }
 
-    /// Prepara le anteprime di stampa con chiaro/scuro e contrasto (rifatte solo quando cambiano).
+    /// Prepara le anteprime di stampa con chiaro/scuro, contrasto e colori (rifatte solo quando cambiano).
     fn refresh_print_tex(&mut self, ctx: &egui::Context) {
-        let want = (self.print.brightness, self.print.contrast);
+        let want = (self.print.brightness, self.print.contrast, self.print.color_mode);
         if self.print.tone_applied != Some(want) {
             self.print.tone_applied = Some(want);
             self.print_tex.clear();
@@ -704,10 +707,22 @@ impl App {
                 continue;
             }
             let Some(src) = self.small_src.get(&path) else { continue };
+            // stesso criterio della stampa: "Automatico" va in grigio solo per le foto già in grigio
+            let gray = match want.2 {
+                print::ColorMode::Color => false,
+                print::ColorMode::Gray => true,
+                print::ColorMode::Auto => color_image_is_gray(src),
+            };
             let mut img = src.clone();
             for px in img.pixels.iter_mut() {
                 let [r, g, b, a] = px.to_array();
-                *px = egui::Color32::from_rgba_premultiplied(lut[r as usize], lut[g as usize], lut[b as usize], a);
+                let (r, g, b) = (lut[r as usize], lut[g as usize], lut[b as usize]);
+                *px = if gray {
+                    let y = gray_level(r, g, b);
+                    egui::Color32::from_rgba_premultiplied(y, y, y, a)
+                } else {
+                    egui::Color32::from_rgba_premultiplied(r, g, b, a)
+                };
             }
             let tex = ctx.load_texture(format!("print-{}", path.display()), img, egui::TextureOptions::LINEAR);
             self.print_tex.insert(path, tex);
@@ -1783,6 +1798,7 @@ impl App {
             photo_mm: self.print.photo.mm(self.print.custom_cm),
             tone: (self.print.brightness, self.print.contrast),
             copies,
+            color_mode: self.print.color_mode,
         };
         let (tx, rx) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -1825,11 +1841,14 @@ impl App {
         let mut light = self.light_theme;
         {
             let p = &mut self.print;
+            // spostabile: si trascina dalla barra del titolo e resta dove la si lascia
             egui::Window::new("Stampa")
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
-                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                .movable(true)
+                .pivot(Align2::CENTER_CENTER)
+                .default_pos(ctx.screen_rect().center())
                 .show(ctx, |ui| {
                     ui.set_min_width(520.0);
                     // testo più grande nella finestra di stampa, per riempire lo spazio disponibile
@@ -1896,6 +1915,19 @@ impl App {
                                 ui.selectable_value(&mut p.orientation, print::Orientation::Portrait, "Verticale");
                                 ui.selectable_value(&mut p.orientation, print::Orientation::Landscape, "Orizzontale");
                             });
+                            ui.add_space(6.0);
+
+                            ui.label(egui::RichText::new("Colori di stampa").strong());
+                            ui.horizontal_wrapped(|ui| {
+                                ui.selectable_value(&mut p.color_mode, print::ColorMode::Auto, "Automatico");
+                                ui.selectable_value(&mut p.color_mode, print::ColorMode::Color, "Colori");
+                                ui.selectable_value(&mut p.color_mode, print::ColorMode::Gray, "Bianco e nero");
+                            });
+                            ui.label(
+                                egui::RichText::new("Bianco e nero stampa in scala di grigi; Automatico lo usa solo per le foto già in grigio")
+                                    .color(col::text_dim())
+                                    .size(12.0),
+                            );
                             ui.add_space(6.0);
                             ui.add(egui::Slider::new(&mut p.margin_mm, 0.0..=30.0).text("Margine (mm)"));
                             {
@@ -2128,6 +2160,33 @@ fn paint_image(painter: &egui::Painter, tex: egui::TextureId, center: Pos2, size
     painter.add(Shape::mesh(mesh));
 }
 
+/// Luminanza (scala di grigi) di un colore, come nella stampa.
+fn gray_level(r: u8, g: u8, b: u8) -> u8 {
+    ((r as u32 * 299 + g as u32 * 587 + b as u32 * 114 + 500) / 1000) as u8
+}
+
+/// Vero se l'anteprima è (quasi) già in scala di grigi, per il modo "Automatico".
+fn color_image_is_gray(img: &egui::ColorImage) -> bool {
+    let total = img.pixels.len();
+    if total == 0 {
+        return true;
+    }
+    let step = (total / 40000).max(1);
+    let mut checked = 0usize;
+    let mut colored = 0usize;
+    for (i, px) in img.pixels.iter().enumerate() {
+        if i % step != 0 {
+            continue;
+        }
+        checked += 1;
+        let [r, g, b, _] = px.to_array();
+        if r.max(g).max(b) - r.min(g).min(b) > 18 {
+            colored += 1;
+        }
+    }
+    checked == 0 || colored * 100 <= checked
+}
+
 /// Copia ridotta (lato lungo max `max` px) per l'anteprima di stampa.
 fn shrink(ci: &egui::ColorImage, max: usize) -> egui::ColorImage {
     let [w, h] = ci.size;
@@ -2138,7 +2197,7 @@ fn shrink(ci: &egui::ColorImage, max: usize) -> egui::ColorImage {
     let step = step.max(1);
     let (nw, nh) = ((w + step - 1) / step, (h + step - 1) / step);
     let mut px = Vec::with_capacity(nw * nh);
-    for y in 0..nh {
+            for y in 0..nh {
         for x in 0..nw {
             px.push(ci.pixels[(y * step).min(h - 1) * w + (x * step).min(w - 1)]);
         }
@@ -2234,6 +2293,11 @@ fn print_prefs(p: &PrintUi) -> Vec<(&'static str, String)> {
         PhotoFmt::Cm13x18 => "13x18",
         PhotoFmt::Custom => "personalizzato",
     };
+    let colori = match p.color_mode {
+        print::ColorMode::Auto => "automatico",
+        print::ColorMode::Color => "colori",
+        print::ColorMode::Gray => "bianconero",
+    };
     vec![
         ("stampa.perpagina", p.per_page.to_string()),
         ("stampa.ripeti", p.repeat.to_string()),
@@ -2247,6 +2311,7 @@ fn print_prefs(p: &PrintUi) -> Vec<(&'static str, String)> {
         ("stampa.poster_righe", p.poster_rows.to_string()),
         ("stampa.chiaro", p.brightness.to_string()),
         ("stampa.contrasto", p.contrast.to_string()),
+        ("stampa.colori", colori.to_string()),
     ]
 }
 
@@ -2326,6 +2391,11 @@ fn load_print_prefs(p: &mut PrintUi) {
     if let Some(v) = num("stampa.contrasto") {
         p.contrast = v.clamp(-1.0, 1.0);
     }
+    p.color_mode = match setting(&map, "stampa.colori") {
+        Some("colori") => print::ColorMode::Color,
+        Some("bianconero") => print::ColorMode::Gray,
+        _ => print::ColorMode::Auto,
+    };
     p.margin_locked = true;
     p.saved_prefs = print_prefs_key(p);
 }

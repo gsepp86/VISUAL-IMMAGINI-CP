@@ -18,6 +18,14 @@ pub enum Orientation {
     Landscape,
 }
 
+/// Colori della stampa: "Automatico" manda in bianco e nero le foto già in scala di grigi.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ColorMode {
+    Auto,
+    Color,
+    Gray,
+}
+
 /// (file, rotazione in quarti di giro orari, ritaglio normalizzato [x0, y0, x1, y1] se presente)
 pub type Item = (PathBuf, u8, Option<[f32; 4]>);
 
@@ -38,6 +46,8 @@ pub struct Job {
     pub tone: (f32, f32),
     /// numero di copie di ogni foglio (minimo 1)
     pub copies: u32,
+    /// colori, bianco e nero (scala di grigi) o automatico
+    pub color_mode: ColorMode,
 }
 
 pub enum Msg {
@@ -163,7 +173,7 @@ fn run_inner(job: &Job, cancel: &AtomicBool, tx: &Sender<Msg>, notify: &dyn Fn()
             dc.abort_doc();
             return Ok(false);
         }
-        let sheet = match compose_sheet(chunk, cw, ch, per_page, job.orientation, margin, gap, photo_px, job.tone) {
+        let sheet = match compose_sheet(chunk, cw, ch, per_page, job.orientation, margin, gap, photo_px, job.tone, job.color_mode) {
             Ok(s) => s,
             Err(e) => {
                 dc.abort_doc();
@@ -210,7 +220,10 @@ fn run_poster(
     let img = load_for_print(&path, rot, crop, wt.max(ht) as u32)?;
     let (turn, place) = util::place_photo(util::RectI { x: 0, y: 0, w: wt, h: ht }, img.width(), img.height(), None);
     let img = if turn { img.rotate90() } else { img };
-    let img = img.resize_exact(place.w as u32, place.h as u32, FilterType::Lanczos3).to_rgb8();
+    let mut img = img.resize_exact(place.w as u32, place.h as u32, FilterType::Lanczos3).to_rgb8();
+    if want_gray(job.color_mode, &img) {
+        make_gray(&mut img);
+    }
     let lut = util::tone_lut(job.tone.0, job.tone.1);
     let copies = job.copies.max(1);
     let total = (cols * rows) as usize * copies as usize;
@@ -275,6 +288,7 @@ fn compose_sheet(
     gap: i32,
     photo_px: Option<(f32, f32)>,
     tone: (f32, f32),
+    color_mode: ColorMode,
 ) -> Result<RgbImage, String> {
     // lato massimo utile: non serve decodificare più della pagina intera
     let max_side = cw.max(ch).max(1) as u32;
@@ -312,16 +326,70 @@ fn compose_sheet(
             // ogni foto sceglie il verso che la fa stare più grande nella cella
             let (turn, r) = util::place_photo(*cell, img.width(), img.height(), photo_px);
             let img = if turn { img.rotate90() } else { img };
+            let gray = want_gray(color_mode, &img.thumbnail(128, 128).to_rgb8());
             let mut small = img.resize_exact(r.w as u32, r.h as u32, FilterType::Lanczos3).to_rgba8();
             for px in small.pixels_mut() {
-                px.0[0] = lut[px.0[0] as usize];
-                px.0[1] = lut[px.0[1] as usize];
-                px.0[2] = lut[px.0[2] as usize];
+                let [r, g, b, a] = px.0;
+                let (r, g, b) = (lut[r as usize], lut[g as usize], lut[b as usize]);
+                px.0 = if gray {
+                    let y = luma(r, g, b);
+                    [y, y, y, a]
+                } else {
+                    [r, g, b, a]
+                };
             }
             imageops::overlay(&mut sheet, &small, r.x as i64, r.y as i64);
         }
     }
     Ok(DynamicImage::ImageRgba8(sheet).to_rgb8())
+}
+
+/// Luminanza (scala di grigi) di un pixel.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn luma(r: u8, g: u8, b: u8) -> u8 {
+    ((r as u32 * 299 + g as u32 * 587 + b as u32 * 114 + 500) / 1000) as u8
+}
+
+/// Trasforma l'immagine in scala di grigi.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn make_gray(img: &mut RgbImage) {
+    for px in img.pixels_mut() {
+        let y = luma(px.0[0], px.0[1], px.0[2]);
+        px.0 = [y, y, y];
+    }
+}
+
+/// Vero se la foto è (quasi) già in scala di grigi: usato dal modo "Automatico".
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_gray(img: &RgbImage) -> bool {
+    let total = img.width() as usize * img.height() as usize;
+    if total == 0 {
+        return true;
+    }
+    let step = (total / 40000).max(1);
+    let mut checked = 0usize;
+    let mut colored = 0usize;
+    for (i, px) in img.pixels().enumerate() {
+        if i % step != 0 {
+            continue;
+        }
+        checked += 1;
+        let [r, g, b] = px.0;
+        if r.max(g).max(b) - r.min(g).min(b) > 18 {
+            colored += 1;
+        }
+    }
+    checked == 0 || colored * 100 <= checked
+}
+
+/// Vero se questa foto va stampata in scala di grigi.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn want_gray(mode: ColorMode, img: &RgbImage) -> bool {
+    match mode {
+        ColorMode::Color => false,
+        ColorMode::Gray => true,
+        ColorMode::Auto => is_gray(img),
+    }
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
