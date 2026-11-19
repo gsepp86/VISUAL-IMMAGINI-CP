@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   windows:
     runs-on: windows-latest
@@ -29,3 +32,12 @@ jobs:
         with:
           name: Visualizzatore-Immagini-CP-Windows
           path: dist/*.exe
+      - name: Pubblica la release
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
+          $assets = Get-ChildItem dist\*.exe | ForEach-Object { $_.FullName }
+          gh release upload "v$version" $assets --clobber
