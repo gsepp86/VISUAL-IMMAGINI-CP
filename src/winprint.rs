@@ -254,7 +254,10 @@ impl PrinterDc {
         let device = wide(printer);
         let hdc = unsafe { CreateDCW(driver.as_ptr(), device.as_ptr(), null(), null()) };
         if hdc == 0 {
-            Err(format!("Impossibile aprire la stampante \"{}\".", printer))
+            Err(crate::i18n::fill(
+                crate::i18n::t("Impossibile aprire la stampante \"{}\"."),
+                &[printer.to_string()],
+            ))
         } else {
             Ok(PrinterDc { hdc })
         }
@@ -381,7 +384,7 @@ impl PrinterDc {
         if r > 0 {
             Ok(())
         } else {
-            Err("La stampante ha rifiutato il documento (StartDoc).".to_string())
+            Err(crate::i18n::t("La stampante ha rifiutato il documento (StartDoc).").to_string())
         }
     }
 
@@ -389,7 +392,7 @@ impl PrinterDc {
         if unsafe { StartPage(self.hdc) } > 0 {
             Ok(())
         } else {
-            Err("Impossibile iniziare la pagina (StartPage).".to_string())
+            Err(crate::i18n::t("Impossibile iniziare la pagina (StartPage).").to_string())
         }
     }
 
@@ -397,7 +400,7 @@ impl PrinterDc {
         if unsafe { EndPage(self.hdc) } > 0 {
             Ok(())
         } else {
-            Err("Impossibile chiudere la pagina (EndPage).".to_string())
+            Err(crate::i18n::t("Impossibile chiudere la pagina (EndPage).").to_string())
         }
     }
 
@@ -417,7 +420,7 @@ impl PrinterDc {
     /// riempiendo `dest_w` x `dest_h` pixel della pagina a partire dall'angolo in alto a sinistra.
     pub fn draw_rgb(&self, w: i32, h: i32, rgb: &[u8], dest_w: i32, dest_h: i32) -> Result<(), String> {
         if w <= 0 || h <= 0 || rgb.len() < (w as usize) * (h as usize) * 3 {
-            return Err("Immagine di stampa non valida.".to_string());
+            return Err(crate::i18n::t("Immagine di stampa non valida.").to_string());
         }
         // GDI vuole BGR con righe allineate a 4 byte
         let stride = ((w as usize) * 3 + 3) & !3;
@@ -467,7 +470,7 @@ impl PrinterDc {
         if r > 0 {
             Ok(())
         } else {
-            Err("La stampante non ha accettato l'immagine (StretchDIBits).".to_string())
+            Err(crate::i18n::t("La stampante non ha accettato l'immagine (StretchDIBits).").to_string())
         }
     }
 }

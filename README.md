@@ -14,7 +14,7 @@ Semplice come il Visualizzatore foto di Windows 7, ma moderno e veloce. Scritto 
 - **Ritaglio libero** (tasto C o icona della barra): trascina angoli, lati o l'interno; Invio applica, Esc annulla. Il ritaglio entra nella stampa.
 - **Orientamento automatico**: per ogni foto sceglie il verso migliore, e il foglio si orienta da solo
 - **Colori di stampa**: colori, bianco e nero (scala di grigi) o automatico (grigio solo per le foto già in grigio), anche nell'anteprima; la scelta parte sempre dal colore predefinito del driver della stampante selezionata
-- **Impostazioni**: tema chiaro/scuro e stampante da proporre all'apertura della stampa (predefinita di Windows, ultima utilizzata o una stampante specifica)
+- **Impostazioni**: lingua italiana o inglese, tema chiaro/scuro e stampante da proporre all'apertura della stampa (predefinita di Windows, ultima utilizzata o una stampante specifica)
 - **Finestra di stampa spostabile**: si trascina dalla barra del titolo e resta dove la si lascia
 - **Regolazione foto**: chiaro/scuro e contrasto nella finestra di stampa (anche nell'anteprima)
 - **Preferenze e driver della stampante**: apre le impostazioni del driver per modifiche avanzate

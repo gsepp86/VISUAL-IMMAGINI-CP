@@ -3,6 +3,7 @@
 
 #![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
 
+mod i18n;
 mod loader;
 mod print;
 mod print_queue;
@@ -96,7 +97,7 @@ impl Tab {
         &self.files[self.index]
     }
     fn title(&self) -> String {
-        self.current().file_name().and_then(|n| n.to_str()).unwrap_or("Immagine").to_string()
+        self.current().file_name().and_then(|n| n.to_str()).unwrap_or(i18n::t("Immagine")).to_string()
     }
 }
 
@@ -245,6 +246,8 @@ struct App {
     update_result: Option<UpdateCheck>,
     show_settings: bool,
     light_theme: bool,
+    /// interfaccia in inglese (scelto dalle Impostazioni)
+    english: bool,
     /// stampante da proporre all'apertura della stampa: "sistema", "ultima" o il suo nome
     startup_printer: String,
     show_strip: bool,
@@ -336,6 +339,7 @@ fn uv_full() -> Rect {
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, args: Vec<PathBuf>, print_mode: bool) -> Self {
         col::set_light(load_light_theme());
+        i18n::set_english(load_language());
         setup_style(&cc.egui_ctx);
 
         let icon_tex = image::load_from_memory(include_bytes!("../assets/icon.png")).ok().map(|img| {
@@ -363,6 +367,7 @@ impl App {
             update_result: None,
             show_settings: false,
             light_theme: col::is_light(),
+            english: i18n::is_english(),
             startup_printer,
             show_strip: true,
             print: print_ui,
@@ -427,9 +432,9 @@ impl App {
 
     fn open_dialog(&mut self) {
         let picked = rfd::FileDialog::new()
-            .set_title("Apri immagine")
-            .add_filter("Immagini", util::EXTENSIONS)
-            .add_filter("Tutti i file", &["*"])
+            .set_title(i18n::t("Apri immagine"))
+            .add_filter(i18n::t("Immagini"), util::EXTENSIONS)
+            .add_filter(i18n::t("Tutti i file"), &["*"])
             .pick_files();
         if let Some(files) = picked {
             for f in files.into_iter().take(30) {
@@ -439,7 +444,7 @@ impl App {
     }
 
     fn open_folder_dialog(&mut self) {
-        if let Some(dir) = rfd::FileDialog::new().set_title("Apri cartella").pick_folder() {
+        if let Some(dir) = rfd::FileDialog::new().set_title(i18n::t("Apri cartella")).pick_folder() {
             self.open_any(dir);
         }
     }
@@ -751,9 +756,9 @@ impl App {
         let Some(path) = self.current_path() else { return };
         let Some(crop) = self.crops.get(&path).copied() else { return };
         let rot = self.rotations.get(&path).copied().unwrap_or(0);
-        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "immagine".to_string());
+        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| i18n::t("immagine").to_string());
         let mut dialog = rfd::FileDialog::new()
-            .set_file_name(format!("{}_ritaglio.jpg", stem))
+            .set_file_name(i18n::fill(i18n::t("{}_ritaglio.jpg"), &[stem]))
             .add_filter("JPEG", &["jpg"])
             .add_filter("PNG", &["png"]);
         if let Some(dir) = path.parent() {
@@ -774,7 +779,7 @@ impl App {
         if let Err(e) = result {
             rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Error)
-                .set_title("Salvataggio non riuscito")
+                .set_title(i18n::t("Salvataggio non riuscito"))
                 .set_description(e.as_str())
                 .show();
         }
@@ -783,24 +788,24 @@ impl App {
     fn close_dialog(&mut self, ctx: &egui::Context) {
         let mut choice: Option<u8> = None; // 0 mantieni, 1 scarta, 2 annulla
         let n = self.crops.len();
-        egui::Window::new("Ritagli")
+        egui::Window::new(i18n::t("Ritagli"))
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.label(format!(
-                    "Ci sono {} foto ritagliate, ma il ritaglio non modifica i file originali:\nle immagini NON sono state salvate definitivamente.\n\nVuoi mantenere i ritagli alla prossima apertura?",
-                    n
+                ui.label(i18n::fill(
+                    i18n::t("Ci sono {} foto ritagliate, ma il ritaglio non modifica i file originali:\nle immagini NON sono state salvate definitivamente.\n\nVuoi mantenere i ritagli alla prossima apertura?"),
+                    &[n.to_string()],
                 ));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Mantieni").clicked() {
+                    if ui.button(i18n::t("Mantieni")).clicked() {
                         choice = Some(0);
                     }
-                    if ui.button("Scarta").clicked() {
+                    if ui.button(i18n::t("Scarta")).clicked() {
                         choice = Some(1);
                     }
-                    if ui.button("Annulla").clicked() {
+                    if ui.button(i18n::t("Annulla")).clicked() {
                         choice = Some(2);
                     }
                 });
@@ -901,7 +906,7 @@ impl App {
         };
         let (w, h) = match self.full.get(&path) {
             Some(e) if e.orig.0 > 0 => e.orig,
-            _ => return "Dimensioni: in caricamento…".to_string(),
+            _ => return i18n::t("Dimensioni: in caricamento…").to_string(),
         };
         let rot = self.rotations.get(&path).copied().unwrap_or(0);
         let (mut w, mut h) = if rot % 2 == 1 { (h, w) } else { (w, h) };
@@ -910,7 +915,10 @@ impl App {
             h = (((c[3] - c[1]).max(0.0)) * h as f32).round() as u32;
         }
         let cm = |px: u32| px as f32 / 300.0 * 2.54;
-        format!("Foto corrente: {} × {} px → a 300 dpi: {:.1} × {:.1} cm", w, h, cm(w), cm(h))
+        i18n::fill(
+            i18n::t("Foto corrente: {} × {} px → a 300 dpi: {} × {} cm"),
+            &[w.to_string(), h.to_string(), format!("{:.1}", cm(w)), format!("{:.1}", cm(h))],
+        )
     }
 
     /// Riquadro di ritaglio sopra l'immagine. In modifica si trascina (angoli, lati o interno);
@@ -987,10 +995,13 @@ impl App {
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(format!("Ritaglio libero: {:.0}% × {:.0}%", (c[2] - c[0]) * 100.0, (c[3] - c[1]) * 100.0));
-                        apply = ui.button("Applica (Invio)").clicked();
-                        reset = ui.button("Ripristina").clicked();
-                        cancel = ui.button("Annulla (Esc)").clicked();
+                        ui.label(i18n::fill(
+                            i18n::t("Ritaglio libero: {}% × {}%"),
+                            &[format!("{:.0}", (c[2] - c[0]) * 100.0), format!("{:.0}", (c[3] - c[1]) * 100.0)],
+                        ));
+                        apply = ui.button(i18n::t("Applica (Invio)")).clicked();
+                        reset = ui.button(i18n::t("Ripristina")).clicked();
+                        cancel = ui.button(i18n::t("Annulla (Esc)")).clicked();
                     });
                 });
             });
@@ -1167,25 +1178,25 @@ impl App {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
                         ui.add_space(12.0);
-                        if tool_button(ui, Ico::PrintAll, "Stampa tutto (Ctrl+Maiusc+P)", has_tabs).clicked() && has_tabs {
+                        if tool_button(ui, Ico::PrintAll, i18n::t("Stampa tutto (Ctrl+Maiusc+P)"), has_tabs).clicked() && has_tabs {
                             self.acts.push(Act::ShowPrint(Scope::Folder));
                         }
-                        if tool_button(ui, Ico::Print, "Stampa (Ctrl+P)", has_tabs).clicked() && has_tabs {
+                        if tool_button(ui, Ico::Print, i18n::t("Stampa (Ctrl+P)"), has_tabs).clicked() && has_tabs {
                             self.acts.push(Act::ShowPrint(Scope::Current));
                         }
-                        if tool_button(ui, Ico::RotR, "Ruota a destra (R)", has_tabs).clicked() && has_tabs {
+                        if tool_button(ui, Ico::RotR, i18n::t("Ruota a destra (R)"), has_tabs).clicked() && has_tabs {
                             self.acts.push(Act::RotateRight);
                         }
-                        if tool_button(ui, Ico::RotL, "Ruota a sinistra (Maiusc+R)", has_tabs).clicked() && has_tabs {
+                        if tool_button(ui, Ico::RotL, i18n::t("Ruota a sinistra (Maiusc+R)"), has_tabs).clicked() && has_tabs {
                             self.acts.push(Act::RotateLeft);
                         }
-                        if tool_button(ui, Ico::Crop, "Ritaglia (C)", has_tabs).clicked() && has_tabs {
+                        if tool_button(ui, Ico::Crop, i18n::t("Ritaglia (C)"), has_tabs).clicked() && has_tabs {
                             self.acts.push(Act::ToggleCrop);
                         }
-                        if tool_button(ui, Ico::Next, "Successiva (→)", multi).clicked() && multi {
+                        if tool_button(ui, Ico::Next, i18n::t("Successiva (→)"), multi).clicked() && multi {
                             self.acts.push(Act::Next);
                         }
-                        if tool_button(ui, Ico::Prev, "Precedente (←)", multi).clicked() && multi {
+                        if tool_button(ui, Ico::Prev, i18n::t("Precedente (←)"), multi).clicked() && multi {
                             self.acts.push(Act::Prev);
                         }
                     });
@@ -1196,64 +1207,64 @@ impl App {
     fn menus(&mut self, ui: &mut egui::Ui) {
         let has_tabs = !self.tabs.is_empty();
         ui.menu_button("File", |ui| {
-            if menu_item(ui, "Apri immagine…", "Ctrl+O", true) {
+            if menu_item(ui, i18n::t("Apri immagine…"), "Ctrl+O", true) {
                 self.acts.push(Act::OpenDialog);
             }
-            if menu_item(ui, "Apri cartella…", "", true) {
+            if menu_item(ui, i18n::t("Apri cartella…"), "", true) {
                 self.acts.push(Act::OpenFolder);
             }
-            if menu_item(ui, "Apri con… (per modificare)", "", has_tabs && cfg!(windows)) {
+            if menu_item(ui, i18n::t("Apri con… (per modificare)"), "", has_tabs && cfg!(windows)) {
                 self.acts.push(Act::OpenWith);
             }
-            if menu_item(ui, "Chiudi scheda", "Ctrl+W", has_tabs) {
+            if menu_item(ui, i18n::t("Chiudi scheda"), "Ctrl+W", has_tabs) {
                 self.acts.push(Act::CloseTab(self.active));
             }
             let crop_here = self.current_path().is_some_and(|p| self.crops.contains_key(&p));
-            if menu_item(ui, "Salva ritaglio come copia…", "", crop_here) {
+            if menu_item(ui, i18n::t("Salva ritaglio come copia…"), "", crop_here) {
                 self.acts.push(Act::SaveCropCopy);
             }
             ui.separator();
-            if menu_item(ui, "Stampa…", "Ctrl+P", has_tabs) {
+            if menu_item(ui, i18n::t("Stampa…"), "Ctrl+P", has_tabs) {
                 self.acts.push(Act::ShowPrint(Scope::Current));
             }
-            if menu_item(ui, "Stampa tutto…", "Ctrl+Maiusc+P", has_tabs) {
+            if menu_item(ui, i18n::t("Stampa tutto…"), i18n::t("Ctrl+Maiusc+P"), has_tabs) {
                 self.acts.push(Act::ShowPrint(Scope::Folder));
             }
             ui.separator();
-            if menu_item(ui, "Imposta come programma predefinito…", "", cfg!(windows)) {
+            if menu_item(ui, i18n::t("Imposta come programma predefinito…"), "", cfg!(windows)) {
                 self.acts.push(Act::DefaultApps);
             }
-            if menu_item(ui, "Impostazioni…", "", true) {
+            if menu_item(ui, i18n::t("Impostazioni…"), "", true) {
                 self.acts.push(Act::ShowSettings);
             }
-            if menu_item(ui, "Info", "", true) {
+            if menu_item(ui, i18n::t("Info"), "", true) {
                 self.acts.push(Act::About);
             }
             ui.separator();
-            if menu_item(ui, "Esci", "", true) {
+            if menu_item(ui, i18n::t("Esci"), "", true) {
                 self.acts.push(Act::Quit);
             }
         });
-        ui.menu_button("Vista", |ui| {
-            ui.checkbox(&mut self.show_strip, "Anteprime dei file successivi");
+        ui.menu_button(i18n::t("Vista"), |ui| {
+            ui.checkbox(&mut self.show_strip, i18n::t("Anteprime dei file successivi"));
             ui.separator();
-            if menu_item(ui, "Adatta alla finestra", "0", has_tabs) {
+            if menu_item(ui, i18n::t("Adatta alla finestra"), "0", has_tabs) {
                 self.acts.push(Act::Fit);
             }
-            if menu_item(ui, "Dimensione reale (100%)", "1", has_tabs) {
+            if menu_item(ui, i18n::t("Dimensione reale (100%)"), "1", has_tabs) {
                 self.acts.push(Act::Actual);
             }
-            if menu_item(ui, "Ruota a destra", "R", has_tabs) {
+            if menu_item(ui, i18n::t("Ruota a destra"), "R", has_tabs) {
                 self.acts.push(Act::RotateRight);
             }
-            if menu_item(ui, "Ruota a sinistra", "Maiusc+R", has_tabs) {
+            if menu_item(ui, i18n::t("Ruota a sinistra"), i18n::t("Maiusc+R"), has_tabs) {
                 self.acts.push(Act::RotateLeft);
             }
-            if menu_item(ui, "Ritaglia…", "C", has_tabs) {
+            if menu_item(ui, i18n::t("Ritaglia…"), "C", has_tabs) {
                 self.acts.push(Act::ToggleCrop);
             }
             ui.separator();
-            if menu_item(ui, "Schermo intero", "F11", true) {
+            if menu_item(ui, i18n::t("Schermo intero"), "F11", true) {
                 self.acts.push(Act::Fullscreen);
             }
         });
@@ -1304,7 +1315,7 @@ impl App {
                 let _ = resp.on_hover_text(full_path);
             }
         }
-        if tool_button(ui, Ico::Plus, "Apri in una nuova scheda (Ctrl+O)", true).clicked() {
+        if tool_button(ui, Ico::Plus, i18n::t("Apri in una nuova scheda (Ctrl+O)"), true).clicked() {
             self.acts.push(Act::OpenDialog);
         }
     }
@@ -1333,7 +1344,7 @@ impl App {
         ui.painter().text(
             pos2(c.x, c.y + 24.0),
             Align2::CENTER_CENTER,
-            "Trascina qui un'immagine oppure premi Ctrl+O",
+            i18n::t("Trascina qui un'immagine oppure premi Ctrl+O"),
             FontId::proportional(15.0),
             col::text_dim(),
         );
@@ -1341,7 +1352,7 @@ impl App {
         let resp = ui.interact(btn, ui.id().with("welcome_open"), egui::Sense::click());
         let fill = if resp.hovered() { col::accent() } else { col::accent().gamma_multiply(0.8) };
         ui.painter().rect_filled(btn, 8.0, fill);
-        ui.painter().text(btn.center(), Align2::CENTER_CENTER, "Apri immagine…", FontId::proportional(15.0), Color32::WHITE);
+        ui.painter().text(btn.center(), Align2::CENTER_CENTER, i18n::t("Apri immagine…"), FontId::proportional(15.0), Color32::WHITE);
         if resp.clicked() {
             self.acts.push(Act::OpenDialog);
         }
@@ -1457,8 +1468,8 @@ impl App {
                 }
                 _ => {
                     let msg = match self.failed.get(&path) {
-                        Some(e) => format!("Impossibile aprire questo file\n{}", e),
-                        None => "Caricamento…".to_string(),
+                        Some(e) => i18n::fill(i18n::t("Impossibile aprire questo file\n{}"), &[e.clone()]),
+                        None => i18n::t("Caricamento…").to_string(),
                     };
                     painter.text(rect.center(), Align2::CENTER_CENTER, msg, FontId::proportional(16.0), col::text_dim());
                 }
@@ -1509,16 +1520,18 @@ impl App {
             }
             _ => String::new(),
         };
-        let text = format!(
-            "{}   •   {}{}   •   {} di {}   •   {}",
-            name,
-            dims,
-            util::human_size(self.meta_cache.1),
-            idx + 1,
-            n,
-            self.zoom_text
+        let text = i18n::fill(
+            i18n::t("{}   •   {}{}   •   {} di {}   •   {}"),
+            &[
+                name,
+                dims,
+                util::human_size(self.meta_cache.1),
+                (idx + 1).to_string(),
+                n.to_string(),
+                self.zoom_text.clone(),
+            ],
         );
-        let text = if self.crops.contains_key(&path) { format!("{}   •   ritagliata", text) } else { text };
+        let text = if self.crops.contains_key(&path) { format!("{}   •   {}", text, i18n::t("ritagliata")) } else { text };
         egui::TopBottomPanel::bottom("status").exact_height(26.0).frame(egui::Frame::default().fill(col::bar())).show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(12.0);
@@ -1633,6 +1646,7 @@ impl App {
             return;
         }
         let mut open = true;
+        let before_language = self.english;
         let before = self.light_theme;
         let before_printer = self.startup_printer.clone();
         // elenco stampanti per scegliere quella da usare all'avvio
@@ -1640,31 +1654,39 @@ impl App {
             self.print.printers = print::list_printers().0;
         }
         let printers = self.print.printers.clone();
-        egui::Window::new("Impostazioni")
+        egui::Window::new(i18n::t("Impostazioni"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.set_min_width(380.0);
-                ui.label(egui::RichText::new("Tema").strong());
-                ui.radio_value(&mut self.light_theme, false, "Scuro (predefinito)");
-                ui.radio_value(&mut self.light_theme, true, "Chiaro");
+                ui.label(egui::RichText::new(i18n::t("Lingua")).strong());
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.english, false, "Italiano");
+                    ui.radio_value(&mut self.english, true, "English");
+                });
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new("Stampante all'avvio").strong());
+                ui.label(egui::RichText::new(i18n::t("Tema")).strong());
+                ui.radio_value(&mut self.light_theme, false, i18n::t("Scuro (predefinito)"));
+                ui.radio_value(&mut self.light_theme, true, i18n::t("Chiaro"));
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(i18n::t("Stampante all'avvio")).strong());
                 let selected = match self.startup_printer.as_str() {
-                    "sistema" => "Predefinita di Windows".to_string(),
-                    "ultima" => "Ultima utilizzata".to_string(),
+                    "sistema" => i18n::t("Predefinita di Windows").to_string(),
+                    "ultima" => i18n::t("Ultima utilizzata").to_string(),
                     name => name.to_string(),
                 };
                 egui::ComboBox::from_id_salt("startup_printer")
                     .width(330.0)
                     .selected_text(selected)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.startup_printer, "sistema".to_string(), "Predefinita di Windows");
-                        ui.selectable_value(&mut self.startup_printer, "ultima".to_string(), "Ultima utilizzata");
+                        ui.selectable_value(&mut self.startup_printer, "sistema".to_string(), i18n::t("Predefinita di Windows"));
+                        ui.selectable_value(&mut self.startup_printer, "ultima".to_string(), i18n::t("Ultima utilizzata"));
                         if !printers.is_empty() {
                             ui.separator();
                             for name in printers.iter() {
@@ -1673,11 +1695,15 @@ impl App {
                         }
                     });
                 ui.label(
-                    egui::RichText::new("È la stampante proposta quando apri la finestra di stampa.")
+                    egui::RichText::new(i18n::t("È la stampante proposta quando apri la finestra di stampa."))
                         .color(col::text_dim())
                         .size(12.0),
                 );
             });
+        if self.english != before_language {
+            i18n::set_english(self.english);
+            save_language(self.english);
+        }
         if self.light_theme != before {
             col::set_light(self.light_theme);
             setup_style(ctx);
@@ -1697,13 +1723,22 @@ impl App {
         let icon = self.icon_tex.as_ref().map(|t| t.id());
         let checking = self.update_rx.is_some();
         let status = match &self.update_result {
-            Some(UpdateCheck::Current) => Some((format!("Hai già l'ultima versione ({}).", VERSION), None)),
-            Some(UpdateCheck::Newer(v)) => Some((format!("È disponibile la versione {}.", v), Some(()))),
-            Some(UpdateCheck::Failed(e)) => Some((format!("Controllo non riuscito: {}", e), None)),
+            Some(UpdateCheck::Current) => Some((
+                i18n::fill(i18n::t("Hai già l'ultima versione ({})."), &[VERSION.to_string()]),
+                None,
+            )),
+            Some(UpdateCheck::Newer(v)) => Some((
+                i18n::fill(i18n::t("È disponibile la versione {}."), &[v.clone()]),
+                Some(()),
+            )),
+            Some(UpdateCheck::Failed(e)) => Some((
+                i18n::fill(i18n::t("Controllo non riuscito: {}"), &[e.clone()]),
+                None,
+            )),
             None => None,
         };
         let mut start_check = false;
-        egui::Window::new("Info")
+        egui::Window::new(i18n::t("Info"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -1718,31 +1753,31 @@ impl App {
                     }
                     ui.add_space(6.0);
                     ui.label(egui::RichText::new(APP_NAME).size(20.0).strong());
-                    ui.label(egui::RichText::new(format!("Versione {}", VERSION)).color(col::text_dim()));
+                    ui.label(egui::RichText::new(i18n::fill(i18n::t("Versione {}"), &[VERSION.to_string()])).color(col::text_dim()));
                     ui.add_space(10.0);
-                    ui.label(ABOUT_TEXT);
+                    ui.label(i18n::t(ABOUT_TEXT));
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new("Licenza MIT  •  Scritto in Rust con egui").color(col::text_dim()).size(12.5));
+                    ui.label(egui::RichText::new(i18n::t("Licenza MIT  •  Scritto in Rust con egui")).color(col::text_dim()).size(12.5));
                     ui.add_space(10.0);
-                    ui.label("Se vuoi contribuire al mio lavoro, puoi farlo con una piccola donazione simbolica: un'app così utile e gratuita per sempre non la trovi ovunque. Apprezzo il gesto ;-)");
+                    ui.label(i18n::t("Se vuoi contribuire al mio lavoro, puoi farlo con una piccola donazione simbolica: un'app così utile e gratuita per sempre non la trovi ovunque. Apprezzo il gesto ;-)"));
                     ui.add_space(4.0);
                     ui.hyperlink_to(egui::RichText::new("Donate via PayPal").strong(), "https://paypal.me/PeppeCP");
                     ui.add_space(6.0);
-                    ui.hyperlink_to("Codice sorgente su GitHub", "https://github.com/gsepp86/VISUAL-IMMAGINI-CP");
+                    ui.hyperlink_to(i18n::t("Codice sorgente su GitHub"), "https://github.com/gsepp86/VISUAL-IMMAGINI-CP");
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
-                        if ui.add_enabled(!checking, egui::Button::new("Cerca aggiornamenti")).clicked() {
+                        if ui.add_enabled(!checking, egui::Button::new(i18n::t("Cerca aggiornamenti"))).clicked() {
                             start_check = true;
                         }
                         if checking {
                             ui.spinner();
-                            ui.label("Controllo in corso…");
+                            ui.label(i18n::t("Controllo in corso…"));
                         }
                     });
                     if let Some((text, newer)) = &status {
                         ui.label(text.clone());
                         if newer.is_some() {
-                            ui.hyperlink_to(egui::RichText::new("Scarica la nuova versione").strong(), RELEASES_PAGE);
+                            ui.hyperlink_to(egui::RichText::new(i18n::t("Scarica la nuova versione")).strong(), RELEASES_PAGE);
                         }
                     }
                     ui.add_space(6.0);
@@ -1771,15 +1806,15 @@ impl App {
                         run.total = total;
                     }
                     print::Msg::Done => {
-                        self.print.message = "Stampa completata.".to_string();
+                        self.print.message = i18n::t("Stampa completata.").to_string();
                         finished = true;
                     }
                     print::Msg::Cancelled => {
-                        self.print.message = "Stampa annullata.".to_string();
+                        self.print.message = i18n::t("Stampa annullata.").to_string();
                         finished = true;
                     }
                     print::Msg::Error(e) => {
-                        self.print.message = format!("Errore: {}", e);
+                        self.print.message = i18n::fill(i18n::t("Errore: {}"), &[e]);
                         finished = true;
                     }
                 }
@@ -1822,12 +1857,12 @@ impl App {
         let printer = match self.print.printers.get(self.print.selected) {
             Some(p) => p.clone(),
             None => {
-                self.print.message = "Nessuna stampante disponibile.".to_string();
+                self.print.message = i18n::t("Nessuna stampante disponibile.").to_string();
                 return;
             }
         };
         if items.is_empty() {
-            self.print.message = "Nessuna immagine da stampare.".to_string();
+            self.print.message = i18n::t("Nessuna immagine da stampare.").to_string();
             return;
         }
         save_last_printer(&printer);
@@ -1900,7 +1935,7 @@ impl App {
         {
             let p = &mut self.print;
             // spostabile: si trascina dalla barra del titolo e resta dove la si lascia
-            egui::Window::new("Stampa")
+            egui::Window::new(i18n::t("Stampa"))
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
@@ -1910,11 +1945,11 @@ impl App {
                 .show(ctx, |ui| {
                     ui.set_min_width(430.0);
                     if !cfg!(windows) {
-                        ui.colored_label(Color32::from_rgb(255, 190, 80), "La stampa è disponibile solo su Windows.");
+                        ui.colored_label(Color32::from_rgb(255, 190, 80), i18n::t("La stampa è disponibile solo su Windows."));
                     }
                     ui.horizontal(|ui| {
-                        ui.label("Stampante:");
-                        let sel = p.printers.get(p.selected).cloned().unwrap_or_else(|| "Nessuna stampante trovata".to_string());
+                        ui.label(i18n::t("Stampante:"));
+                        let sel = p.printers.get(p.selected).cloned().unwrap_or_else(|| i18n::t("Nessuna stampante trovata").to_string());
                         egui::ComboBox::from_id_salt("printer_combo").width(300.0).selected_text(sel).show_ui(ui, |ui| {
                             for (i, name) in p.printers.iter().enumerate() {
                                 ui.selectable_value(&mut p.selected, i, name.as_str());
@@ -1925,74 +1960,77 @@ impl App {
 
                     ui.horizontal_top(|ui| {
                         ui.vertical(|ui| {
-                            ui.label(egui::RichText::new("Cosa stampare").strong());
-                            ui.radio_value(&mut p.scope, Scope::Current, "Immagine corrente");
-                            ui.radio_value(&mut p.scope, Scope::Folder, format!("Tutte le immagini della cartella ({})", n_folder));
-                            ui.radio_value(&mut p.scope, Scope::Tabs, format!("Immagini di tutte le schede ({})", n_tabs));
+                            ui.label(egui::RichText::new(i18n::t("Cosa stampare")).strong());
+                            ui.radio_value(&mut p.scope, Scope::Current, i18n::t("Immagine corrente"));
+                            ui.radio_value(&mut p.scope, Scope::Folder, i18n::fill(i18n::t("Tutte le immagini della cartella ({})"), &[n_folder.to_string()]));
+                            ui.radio_value(&mut p.scope, Scope::Tabs, i18n::fill(i18n::t("Immagini di tutte le schede ({})"), &[n_tabs.to_string()]));
                             ui.add_space(6.0);
 
-                            ui.label(egui::RichText::new("Immagini per pagina").strong());
+                            ui.label(egui::RichText::new(i18n::t("Immagini per pagina")).strong());
                             ui.add_enabled_ui(p.repeat <= 1 && !p.poster, |ui| {
                                 ui.horizontal_wrapped(|ui| {
                                     for &n in util::PER_PAGE_CHOICES {
-                                        let label = if n == 1 { "1".to_string() } else { format!("{} in 1", n) };
+                                        let label = if n == 1 { "1".to_string() } else { i18n::fill(i18n::t("{} in 1"), &[n.to_string()]) };
                                         ui.selectable_value(&mut p.per_page, n, label);
                                     }
                                 });
                             });
                             ui.horizontal(|ui| {
-                                ui.label("Stessa foto più volte nel foglio");
+                                ui.label(i18n::t("Stessa foto più volte nel foglio"));
                                 ui.add(egui::DragValue::new(&mut p.repeat).range(1..=16));
                             });
                             if p.repeat > 1 {
                                 ui.label(
-                                    egui::RichText::new(format!("Ogni foto occupa {} posizioni nel foglio", p.repeat))
+                                    egui::RichText::new(i18n::fill(i18n::t("Ogni foto occupa {} posizioni nel foglio"), &[p.repeat.to_string()]))
                                         .color(col::text_dim())
                                         .size(12.0),
                                 );
                             }
                             ui.add_space(6.0);
 
-                            ui.label(egui::RichText::new("Orientamento").strong());
+                            ui.label(egui::RichText::new(i18n::t("Orientamento")).strong());
                             ui.horizontal(|ui| {
-                                ui.selectable_value(&mut p.orientation, print::Orientation::Auto, "Automatico (miglior verso)");
-                                ui.selectable_value(&mut p.orientation, print::Orientation::Portrait, "Verticale");
-                                ui.selectable_value(&mut p.orientation, print::Orientation::Landscape, "Orizzontale");
+                                ui.selectable_value(&mut p.orientation, print::Orientation::Auto, i18n::t("Automatico (miglior verso)"));
+                                ui.selectable_value(&mut p.orientation, print::Orientation::Portrait, i18n::t("Verticale"));
+                                ui.selectable_value(&mut p.orientation, print::Orientation::Landscape, i18n::t("Orizzontale"));
                             });
                             ui.add_space(6.0);
 
-                            ui.label(egui::RichText::new("Colori di stampa").strong());
+                            ui.label(egui::RichText::new(i18n::t("Colori di stampa")).strong());
                             ui.horizontal_wrapped(|ui| {
-                                ui.selectable_value(&mut p.color_mode, print::ColorMode::Auto, "Automatico");
-                                ui.selectable_value(&mut p.color_mode, print::ColorMode::Color, "Colori");
-                                ui.selectable_value(&mut p.color_mode, print::ColorMode::Gray, "Bianco e nero");
+                                ui.selectable_value(&mut p.color_mode, print::ColorMode::Auto, i18n::t("Automatico"));
+                                ui.selectable_value(&mut p.color_mode, print::ColorMode::Color, i18n::t("Colori"));
+                                ui.selectable_value(&mut p.color_mode, print::ColorMode::Gray, i18n::t("Bianco e nero"));
                             });
                             ui.label(
-                                egui::RichText::new("Bianco e nero stampa in scala di grigi; Automatico lo usa solo per le foto già in grigio")
+                                egui::RichText::new(i18n::t("Bianco e nero stampa in scala di grigi; Automatico lo usa solo per le foto già in grigio"))
                                     .color(col::text_dim())
                                     .size(12.0),
                             );
                             ui.add_space(6.0);
-                            ui.add(egui::Slider::new(&mut p.margin_mm, 0.0..=30.0).text("Margine (mm)"));
+                            ui.add(egui::Slider::new(&mut p.margin_mm, 0.0..=30.0).text(i18n::t("Margine (mm)")));
                             {
                                 ui.label(
-                                    egui::RichText::new(format!("Margine minimo della stampante: {:.1} mm (misurato dal bordo del foglio)", p.printer_margin_mm))
+                                    egui::RichText::new(i18n::fill(
+                                        i18n::t("Margine minimo della stampante: {} mm (misurato dal bordo del foglio)"),
+                                        &[format!("{:.1}", p.printer_margin_mm)],
+                                    ))
                                         .color(col::text_dim())
                                         .size(12.0),
                                 );
                             }
-                            ui.add(egui::Slider::new(&mut p.gap_mm, 0.0..=20.0).text("Spazio tra le foto (mm)"));
+                            ui.add(egui::Slider::new(&mut p.gap_mm, 0.0..=20.0).text(i18n::t("Spazio tra le foto (mm)")));
                             ui.add_space(6.0);
-                            ui.label(egui::RichText::new("Dimensione foto").strong());
+                            ui.label(egui::RichText::new(i18n::t("Dimensione foto")).strong());
                             let photo_before = p.photo;
                             for f in [PhotoFmt::Page, PhotoFmt::Cm10x15, PhotoFmt::Cm13x18, PhotoFmt::Custom] {
                                 ui.radio_value(&mut p.photo, f, f.label());
                             }
                             if p.photo == PhotoFmt::Custom {
                                 ui.horizontal(|ui| {
-                                    ui.label("Larghezza");
+                                    ui.label(i18n::t("Larghezza"));
                                     ui.add(egui::DragValue::new(&mut p.custom_cm.0).range(1.0..=60.0).speed(0.1).suffix(" cm"));
-                                    ui.label("Altezza");
+                                    ui.label(i18n::t("Altezza"));
                                     ui.add(egui::DragValue::new(&mut p.custom_cm.1).range(1.0..=60.0).speed(0.1).suffix(" cm"));
                                 });
                             }
@@ -2000,36 +2038,37 @@ impl App {
                                 p.margin_mm = p.printer_margin_mm.min(30.0);
                             }
                             ui.add_space(6.0);
-                            ui.checkbox(&mut p.poster, "Poster su più fogli");
+                            ui.checkbox(&mut p.poster, i18n::t("Poster su più fogli"));
                             if p.poster {
                                 ui.horizontal(|ui| {
-                                    ui.label("In orizzontale");
+                                    ui.label(i18n::t("In orizzontale"));
                                     ui.add(egui::DragValue::new(&mut p.poster_cols).range(1..=6));
-                                    ui.label("In verticale");
+                                    ui.label(i18n::t("In verticale"));
                                     ui.add(egui::DragValue::new(&mut p.poster_rows).range(1..=6));
                                 });
                                 ui.label(
-                                    egui::RichText::new(format!(
-                                        "Una sola immagine distribuita su {} fogli. Per unirli senza strisce, sovrapponi i bordi di circa {:.1} mm.",
-                                        p.poster_cols * p.poster_rows,
-                                        2.0 * p.printer_margin_mm
+                                    egui::RichText::new(i18n::fill(
+                                        i18n::t("Una sola immagine distribuita su {} fogli. Per unirli senza strisce, sovrapponi i bordi di circa {} mm."),
+                                        &[
+                                            (p.poster_cols * p.poster_rows).to_string(),
+                                            format!("{:.1}", 2.0 * p.printer_margin_mm),
+                                        ],
                                     ))
                                     .color(col::text_dim())
                                     .size(12.0),
                                 );
                             }
                             ui.horizontal(|ui| {
-                                ui.label("Numero di copie");
+                                ui.label(i18n::t("Numero di copie"));
                                 ui.add(egui::DragValue::new(&mut p.copies).range(1..=99));
                             });
-                            ui.checkbox(&mut p.use_defaults, "Usa queste impostazioni come predefinite");
+                            ui.checkbox(&mut p.use_defaults, i18n::t("Usa queste impostazioni come predefinite"));
                             ui.label(egui::RichText::new(cur_info.clone()).color(col::text_dim()).size(12.0));
                             if let Some((w, h)) = p.photo.mm(p.custom_cm) {
                                 ui.label(
-                                    egui::RichText::new(format!(
-                                        "Ogni foto a {:.0}×{:.0} cm, ridotta in proporzione se il foglio è più piccolo",
-                                        w / 10.0,
-                                        h / 10.0
+                                    egui::RichText::new(i18n::fill(
+                                        i18n::t("Ogni foto a {}×{} cm, ridotta in proporzione se il foglio è più piccolo"),
+                                        &[format!("{:.0}", w / 10.0), format!("{:.0}", h / 10.0)],
                                     ))
                                     .color(col::text_dim())
                                     .size(12.0),
@@ -2038,8 +2077,8 @@ impl App {
                         });
                         ui.add_space(16.0);
                         ui.vertical(|ui| {
-                            ui.label(egui::RichText::new("Anteprima").strong());
-                            ui.label(egui::RichText::new("Anteprima reale: prima pagina, come verrà stampata").color(col::text_dim()).size(12.0));
+                            ui.label(egui::RichText::new(i18n::t("Anteprima")).strong());
+                            ui.label(egui::RichText::new(i18n::t("Anteprima reale: prima pagina, come verrà stampata")).color(col::text_dim()).size(12.0));
                             let cells = util::cells_per_page(p.per_page, p.repeat as usize);
                             if p.poster {
                                 draw_poster_preview(ui, &preview_items, p.page_mm, p.poster_cols, p.poster_rows, p.orientation);
@@ -2052,21 +2091,21 @@ impl App {
                                 util::sheet_count(count, p.per_page, p.repeat as usize)
                             };
                             let testo = if p.poster {
-                                format!("Poster: {} fogli", pages)
+                                i18n::fill(i18n::t("Poster: {} fogli"), &[pages.to_string()])
                             } else {
-                                format!("{} immagini → {} pagine", count, pages)
+                                i18n::fill(i18n::t("{} immagini → {} pagine"), &[count.to_string(), pages.to_string()])
                             };
                             ui.label(egui::RichText::new(testo).color(col::text_dim()));
                             ui.add_space(8.0);
-                            ui.label(egui::RichText::new("Regolazione foto").strong());
-                            ui.add(egui::Slider::new(&mut p.brightness, -1.0..=1.0).text("Chiaro / scuro"));
-                            ui.add(egui::Slider::new(&mut p.contrast, -1.0..=1.0).text("Contrasto"));
+                            ui.label(egui::RichText::new(i18n::t("Regolazione foto")).strong());
+                            ui.add(egui::Slider::new(&mut p.brightness, -1.0..=1.0).text(i18n::t("Chiaro / scuro")));
+                            ui.add(egui::Slider::new(&mut p.contrast, -1.0..=1.0).text(i18n::t("Contrasto")));
                         });
                     });
                     ui.separator();
 
                     ui.horizontal(|ui| {
-                        if ui.button("Preferenze e driver della stampante…").clicked() {
+                        if ui.button(i18n::t("Preferenze e driver della stampante…")).clicked() {
                             if let Some(n) = &sel_name {
                                 open_printer_driver(n);
                             }
@@ -2074,8 +2113,11 @@ impl App {
                     });
                     if let Some(run) = &p.running {
                         let frac = if run.total > 0 { run.done as f32 / run.total as f32 } else { 0.0 };
-                        ui.add(egui::ProgressBar::new(frac).text(format!("Stampa in corso… {} di {}", run.done, run.total)));
-                        if ui.button("Annulla stampa").clicked() {
+                        ui.add(egui::ProgressBar::new(frac).text(i18n::fill(
+                            i18n::t("Stampa in corso… {} di {}"),
+                            &[run.done.to_string(), run.total.to_string()],
+                        )));
+                        if ui.button(i18n::t("Annulla stampa")).clicked() {
                             cancel = true;
                         }
                     } else {
@@ -2084,10 +2126,10 @@ impl App {
                         }
                         ui.horizontal(|ui| {
                             let can = cfg!(windows) && !p.printers.is_empty() && count > 0;
-                            if ui.add_enabled(can, egui::Button::new("Stampa")).clicked() {
+                            if ui.add_enabled(can, egui::Button::new(i18n::t("Stampa"))).clicked() {
                                 start = true;
                             }
-                            if ui.button("Chiudi").clicked() {
+                            if ui.button(i18n::t("Chiudi")).clicked() {
                                 close = true;
                             }
                         });
@@ -2269,7 +2311,7 @@ fn check_latest_release() -> UpdateCheck {
             Ok(b) => b,
             Err(e) => return UpdateCheck::Failed(e.to_string()),
         },
-        Err(ureq::Error::Status(404, _)) => return UpdateCheck::Failed("nessuna versione pubblicata".to_string()),
+        Err(ureq::Error::Status(404, _)) => return UpdateCheck::Failed(i18n::t("nessuna versione pubblicata").to_string()),
         Err(e) => return UpdateCheck::Failed(e.to_string()),
     };
     match util::json_string_field(&body, "tag_name") {
@@ -2277,7 +2319,7 @@ fn check_latest_release() -> UpdateCheck {
             UpdateCheck::Newer(tag.trim_start_matches(|c| c == 'v' || c == 'V').to_string())
         }
         Some(_) => UpdateCheck::Current,
-        None => UpdateCheck::Failed("risposta non valida".to_string()),
+        None => UpdateCheck::Failed(i18n::t("risposta non valida").to_string()),
     }
 }
 
@@ -2310,6 +2352,17 @@ fn write_settings(map: &std::collections::BTreeMap<String, String>) {
 
 fn load_light_theme() -> bool {
     read_settings().get("tema").is_some_and(|v| v == "chiaro")
+}
+
+/// Lingua dell'interfaccia: inglese se scelta dalle Impostazioni (italiano di serie).
+fn load_language() -> bool {
+    read_settings().get("lingua").is_some_and(|v| v == "inglese")
+}
+
+fn save_language(english: bool) {
+    let mut map = read_settings();
+    map.insert("lingua".to_string(), if english { "inglese" } else { "italiano" }.to_string());
+    write_settings(&map);
 }
 
 fn save_light_theme(light: bool) {
@@ -2674,10 +2727,10 @@ impl PhotoFmt {
     }
     fn label(self) -> &'static str {
         match self {
-            PhotoFmt::Page => "Adatta al foglio (massimo ingrandimento)",
-            PhotoFmt::Cm10x15 => "10×15 cm (in proporzione)",
-            PhotoFmt::Cm13x18 => "13×18 cm (in proporzione)",
-            PhotoFmt::Custom => "Personalizzato (in proporzione)",
+            PhotoFmt::Page => i18n::t("Adatta al foglio (massimo ingrandimento)"),
+            PhotoFmt::Cm10x15 => i18n::t("10×15 cm (in proporzione)"),
+            PhotoFmt::Cm13x18 => i18n::t("13×18 cm (in proporzione)"),
+            PhotoFmt::Custom => i18n::t("Personalizzato (in proporzione)"),
         }
     }
 }

@@ -137,7 +137,7 @@ pub fn run(job: Job, cancel: Arc<AtomicBool>, tx: Sender<Msg>, notify: impl Fn()
 
 #[cfg(not(windows))]
 fn run_inner(_job: &Job, _cancel: &AtomicBool, _tx: &Sender<Msg>, _notify: &dyn Fn()) -> Result<bool, String> {
-    Err("La stampa è disponibile solo su Windows.".to_string())
+    Err(crate::i18n::t("La stampa è disponibile solo su Windows.").to_string())
 }
 
 #[cfg(windows)]
@@ -145,7 +145,7 @@ fn run_inner(job: &Job, cancel: &AtomicBool, tx: &Sender<Msg>, notify: &dyn Fn()
     use crate::winprint::PrinterDc;
 
     if job.items.is_empty() {
-        return Err("Nessuna immagine da stampare.".to_string());
+        return Err(crate::i18n::t("Nessuna immagine da stampare.").to_string());
     }
     let forced = match job.orientation {
         Orientation::Auto => None,
@@ -162,7 +162,7 @@ fn run_inner(job: &Job, cancel: &AtomicBool, tx: &Sender<Msg>, notify: &dyn Fn()
     let (pw, ph) = dc.page_px();
     let (dpi_x, _dpi_y) = dc.dpi();
     if pw <= 0 || ph <= 0 || dpi_x <= 0 {
-        return Err("La stampante non ha restituito un'area di stampa valida.".to_string());
+        return Err(crate::i18n::t("La stampante non ha restituito un'area di stampa valida.").to_string());
     }
 
     // Si compone a max 300 dpi: oltre non serve e si risparmia memoria; la stampante scala il resto.
@@ -230,7 +230,7 @@ fn run_poster(
     notify: &dyn Fn(),
 ) -> Result<bool, String> {
     let Some((path, rot, crop)) = job.items.first().cloned() else {
-        return Err("Nessuna immagine da stampare.".to_string());
+        return Err(crate::i18n::t("Nessuna immagine da stampare.").to_string());
     };
     let (cols, rows) = (cols.max(1) as i32, rows.max(1) as i32);
     // area del poster: tutti i fogli affiancati (ogni foglio è la sua area stampabile)
@@ -326,7 +326,7 @@ fn compose_sheet(
                 .collect();
             handles
                 .into_iter()
-                .map(|h| h.join().unwrap_or_else(|_| Err("errore interno".to_string())))
+                .map(|h| h.join().unwrap_or_else(|_| Err(crate::i18n::t("errore interno").to_string())))
                 .collect()
         });
         decoded.extend(part);

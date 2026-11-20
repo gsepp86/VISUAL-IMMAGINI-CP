@@ -145,7 +145,7 @@ fn worker_loop(shared: Shared, tx: Sender<Decoded>, ctx: egui::Context) {
 /// Decodifica un file e invia i risultati. Restituisce false se il canale è chiuso.
 fn process(path: &Path, job: Job, tx: &Sender<Decoded>, ctx: &egui::Context) -> bool {
     let decoded = std::panic::catch_unwind(AssertUnwindSafe(|| decode(path)))
-        .unwrap_or_else(|_| Err("Errore interno durante la decodifica".to_string()));
+        .unwrap_or_else(|_| Err(crate::i18n::t("Errore interno durante la decodifica").to_string()));
 
     let img = match decoded {
         Ok(img) => img,
@@ -220,7 +220,7 @@ pub fn decode(path: &Path) -> Result<DynamicImage, String> {
 fn decode_raw(path: &Path) -> Result<DynamicImage, String> {
     let data = std::fs::read(path).map_err(|e| format!("{e}"))?;
     let (s, e) = util::find_largest_jpeg(&data)
-        .ok_or_else(|| "Questo RAW non contiene un'anteprima JPEG leggibile.".to_string())?;
+        .ok_or_else(|| crate::i18n::t("Questo RAW non contiene un'anteprima JPEG leggibile.").to_string())?;
     let mut reader = image::ImageReader::new(std::io::Cursor::new(&data[s..e]))
         .with_guessed_format()
         .map_err(|e| format!("{e}"))?;
@@ -246,13 +246,13 @@ fn decode_svg(path: &Path) -> Result<DynamicImage, String> {
     let size = tree.size();
     let (w, h) = (size.width(), size.height());
     if !(w > 0.0 && h > 0.0) {
-        return Err("SVG senza dimensioni".to_string());
+        return Err(crate::i18n::t("SVG senza dimensioni").to_string());
     }
     // rasterizza con il lato lungo a 2048 px
     let scale = 2048.0 / w.max(h);
     let pw = ((w * scale).round() as u32).clamp(1, 4096);
     let ph = ((h * scale).round() as u32).clamp(1, 4096);
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(pw, ph).ok_or_else(|| "SVG troppo grande".to_string())?;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(pw, ph).ok_or_else(|| crate::i18n::t("SVG troppo grande").to_string())?;
     resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
     // tiny-skia usa alfa premoltiplicato: convertiamo in alfa normale
     let mut buf: Vec<u8> = Vec::with_capacity((pw * ph * 4) as usize);
@@ -260,13 +260,13 @@ fn decode_svg(path: &Path) -> Result<DynamicImage, String> {
         let c = p.demultiply();
         buf.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
     }
-    let img = image::RgbaImage::from_raw(pw, ph, buf).ok_or_else(|| "SVG non valido".to_string())?;
+    let img = image::RgbaImage::from_raw(pw, ph, buf).ok_or_else(|| crate::i18n::t("SVG non valido").to_string())?;
     Ok(DynamicImage::ImageRgba8(img))
 }
 
 #[cfg(not(feature = "svg"))]
 fn decode_svg(_path: &Path) -> Result<DynamicImage, String> {
-    Err("Supporto SVG non incluso in questa versione".to_string())
+    Err(crate::i18n::t("Supporto SVG non incluso in questa versione").to_string())
 }
 
 /// JPEG XL con il decoder Rust puro `jxl-oxide`.
@@ -293,26 +293,26 @@ fn decode_jxl(path: &Path) -> Result<DynamicImage, String> {
     }
     image::RgbaImage::from_raw(w, h, out)
         .map(DynamicImage::ImageRgba8)
-        .ok_or_else(|| "Immagine JPEG XL non valida".to_string())
+        .ok_or_else(|| crate::i18n::t("Immagine JPEG XL non valida").to_string())
 }
 
 #[cfg(not(feature = "jxl"))]
 fn decode_jxl(_path: &Path) -> Result<DynamicImage, String> {
-    Err("Supporto JPEG XL non incluso in questa versione".to_string())
+    Err(crate::i18n::t("Supporto JPEG XL non incluso in questa versione").to_string())
 }
 
 /// HEIC / AVIF con i codec di Windows.
 #[cfg(all(windows, feature = "wic"))]
 fn decode_wic(path: &Path) -> Result<DynamicImage, String> {
     let (w, h, buf) = crate::wic::decode(path).map_err(|e| {
-        format!("{e}\nPer HEIC/AVIF installa da Microsoft Store \"Estensioni immagine HEIF\" o \"Estensioni immagine AVIF\".")
+        format!("{e}\n{}", crate::i18n::t("Per HEIC/AVIF installa da Microsoft Store \"Estensioni immagine HEIF\" o \"Estensioni immagine AVIF\"."))
     })?;
     image::RgbaImage::from_raw(w, h, buf)
         .map(DynamicImage::ImageRgba8)
-        .ok_or_else(|| "Immagine HEIC/AVIF non valida".to_string())
+        .ok_or_else(|| crate::i18n::t("Immagine HEIC/AVIF non valida").to_string())
 }
 
 #[cfg(not(all(windows, feature = "wic")))]
 fn decode_wic(_path: &Path) -> Result<DynamicImage, String> {
-    Err("HEIC/AVIF: disponibili solo su Windows con la funzione wic".to_string())
+    Err(crate::i18n::t("HEIC/AVIF: disponibili solo su Windows con la funzione wic").to_string())
 }
