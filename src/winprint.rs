@@ -12,12 +12,12 @@ const PHYSICALWIDTH: i32 = 110;
 const PHYSICALHEIGHT: i32 = 111;
 const PHYSICALOFFSETX: i32 = 112;
 const PHYSICALOFFSETY: i32 = 113;
-const NUMCOLORS: i32 = 24;
 const PRINTER_ENUM_LOCAL: u32 = 2;
 const PRINTER_ENUM_CONNECTIONS: u32 = 4;
 const DIB_RGB_COLORS: u32 = 0;
 const SRCCOPY: u32 = 0x00CC_0020;
 const DM_ORIENTATION: u32 = 0x0000_0001;
+const DM_COLOR_FIELD: u32 = 0x0000_0800;
 const DM_IN_BUFFER: u32 = 8;
 const DM_OUT_BUFFER: u32 = 2;
 const DMORIENT_PORTRAIT: i16 = 1;
@@ -122,11 +122,60 @@ extern "system" {
     ) -> i32;
 }
 
+/// Colore dichiarato in una DEVMODE: conta solo se il campo dmColor è davvero valorizzato.
 unsafe fn color_from_devmode(dm: *const u8) -> Option<bool> {
+    let fields = *(dm.add(DM_FIELDS_OFFSET) as *const u32);
+    if fields & DM_COLOR_FIELD == 0 {
+        return None;
+    }
     match *(dm.add(DM_COLOR_OFFSET) as *const i16) {
         DMCOLOR_COLOR => Some(true),
         DMCOLOR_MONOCHROME => Some(false),
         _ => None,
+    }
+}
+
+/// DEVMODE predefinita della coda di stampa: prima quella dell'utente (livello 9),
+/// poi quella del computer (livello 8). Sono le stesse che mostra il driver.
+unsafe fn devmode_color_from_queue(name: *const u16, level: u32) -> Option<bool> {
+    let mut handle: isize = 0;
+    if OpenPrinterW(name, &mut handle, null()) == 0 {
+        return None;
+    }
+    let mut found = None;
+    let mut needed: u32 = 0;
+    GetPrinterW(handle, level, std::ptr::null_mut(), 0, &mut needed);
+    if (needed as usize) > std::mem::size_of::<*const u8>() {
+        let mut buf = vec![0u64; (needed as usize + 7) / 8];
+        if GetPrinterW(handle, level, buf.as_mut_ptr() as *mut u8, needed, &mut needed) != 0 {
+            // PRINTER_INFO_9W / PRINTER_INFO_8W: un solo puntatore alla DEVMODE
+            let dm = *(buf.as_ptr() as *const *const u8);
+            if !dm.is_null() {
+                found = color_from_devmode(dm);
+            }
+        }
+    }
+    ClosePrinter(handle);
+    found
+}
+
+/// Ultimo ripiego: il nome della coda dichiara il bianco e nero (es. "B/N", "Mono").
+fn name_says_mono(printer: &str) -> Option<bool> {
+    let n = printer.to_lowercase().replace(' ', "");
+    const MONO_HINTS: [&str; 8] = [
+        "b/n",
+        "b&n",
+        "black/white",
+        "blackandwhite",
+        "mono",
+        "grigi",
+        "grayscale",
+        "greyscale",
+    ];
+    if MONO_HINTS.iter().any(|k| n.contains(k)) {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -254,54 +303,35 @@ impl PrinterDc {
     pub fn default_color(printer: &str) -> Option<bool> {
         let name = wide(printer);
         unsafe {
-            // 1) DEVMODE predefinita della stampante, quella che Windows usa davvero
-            let mut handle: isize = 0;
-            if OpenPrinterW(name.as_ptr(), &mut handle, null()) != 0 {
-                let mut needed: u32 = 0;
-                GetPrinterW(handle, 8, std::ptr::null_mut(), 0, &mut needed);
-                let mut found = None;
-                if (needed as usize) >= std::mem::size_of::<*const u8>() {
-                    let mut buf = vec![0u64; (needed as usize + 7) / 8];
-                    if GetPrinterW(handle, 8, buf.as_mut_ptr() as *mut u8, needed, &mut needed) != 0 {
-                        let dm = *(buf.as_ptr() as *const *const u8);
-                        if !dm.is_null() {
-                            found = color_from_devmode(dm);
-                        }
-                    }
-                }
-                ClosePrinter(handle);
-                if found.is_some() {
-                    return found;
+            // 1) preferenze predefinite della coda, nell'ordine in cui le mostra il driver
+            for level in [9u32, 8] {
+                if let Some(found) = devmode_color_from_queue(name.as_ptr(), level) {
+                    return Some(found);
                 }
             }
             // 2) driver che non espone la DEVMODE predefinita: gliela si chiede
-            let size = DocumentPropertiesW(0, name.as_ptr(), std::ptr::null(), std::ptr::null_mut(), null(), 0);
+            let size = DocumentPropertiesW(0, name.as_ptr(), name.as_ptr(), std::ptr::null_mut(), null(), 0);
             if size > 0 {
                 let mut buf = vec![0u64; (size as usize + 7) / 8];
                 let dm = buf.as_mut_ptr() as *mut u8;
-                if DocumentPropertiesW(0, name.as_ptr(), std::ptr::null(), dm, null(), DM_OUT_BUFFER) == 1 {
+                if DocumentPropertiesW(0, name.as_ptr(), name.as_ptr(), dm, null(), DM_OUT_BUFFER) == 1 {
                     if let Some(found) = color_from_devmode(dm) {
                         return Some(found);
                     }
                 }
             }
-            // 3) ultimo tentativo: un dispositivo colore non ha un numero di colori finito
-            if let Ok(dc) = Self::open(printer) {
-                let colors = GetDeviceCaps(dc.hdc, NUMCOLORS);
-                if colors != 0 {
-                    return Some(colors < 0);
-                }
-            }
-            None
+            // 3) coda che dichiara il bianco e nero solo nel nome (es. "... B/N STANDARD")
+            name_says_mono(printer)
         }
     }
 
-    /// Apre la stampante chiedendo al driver il verso della carta:
-    /// Some(true) = orizzontale, Some(false) = verticale, None = impostazioni predefinite.
-    pub fn open_oriented(printer: &str, landscape: Option<bool>) -> Result<Self, String> {
-        let Some(land) = landscape else {
+    /// Apre la stampante imponendo al driver le preferenze scelte:
+    /// verso della carta (Some(true) = orizzontale) e colore (Some(true) = colori).
+    /// None lascia la preferenza predefinita del driver.
+    pub fn open_with(printer: &str, landscape: Option<bool>, color: Option<bool>) -> Result<Self, String> {
+        if landscape.is_none() && color.is_none() {
             return Self::open(printer);
-        };
+        }
         let name = wide(printer);
         let driver = wide("WINSPOOL");
         unsafe {
@@ -310,9 +340,16 @@ impl PrinterDc {
                 let mut buf = vec![0u64; (size as usize + 7) / 8];
                 let dm = buf.as_mut_ptr() as *mut u8;
                 if DocumentPropertiesW(0, name.as_ptr(), name.as_ptr(), dm, std::ptr::null(), DM_OUT_BUFFER) == 1 {
-                    let orient: i16 = if land { DMORIENT_LANDSCAPE } else { DMORIENT_PORTRAIT };
-                    *(dm.add(DM_FIELDS_OFFSET) as *mut u32) |= DM_ORIENTATION;
-                    *(dm.add(DM_ORIENTATION_OFFSET) as *mut i16) = orient;
+                    if let Some(land) = landscape {
+                        let orient: i16 = if land { DMORIENT_LANDSCAPE } else { DMORIENT_PORTRAIT };
+                        *(dm.add(DM_FIELDS_OFFSET) as *mut u32) |= DM_ORIENTATION;
+                        *(dm.add(DM_ORIENTATION_OFFSET) as *mut i16) = orient;
+                    }
+                    if let Some(colori) = color {
+                        let mode: i16 = if colori { DMCOLOR_COLOR } else { DMCOLOR_MONOCHROME };
+                        *(dm.add(DM_FIELDS_OFFSET) as *mut u32) |= DM_COLOR_FIELD;
+                        *(dm.add(DM_COLOR_OFFSET) as *mut i16) = mode;
+                    }
                     if DocumentPropertiesW(0, name.as_ptr(), name.as_ptr(), dm, dm, DM_IN_BUFFER | DM_OUT_BUFFER) == 1 {
                         let hdc = CreateDCW(driver.as_ptr(), name.as_ptr(), null(), dm as *const c_void);
                         if hdc != 0 {
@@ -322,7 +359,7 @@ impl PrinterDc {
                 }
             }
         }
-        // il driver non ha accettato il verso: si usa la stampante così com'è
+        // il driver non ha accettato le preferenze: si usa la stampante così com'è
         Self::open(printer)
     }
 

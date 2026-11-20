@@ -152,7 +152,13 @@ fn run_inner(job: &Job, cancel: &AtomicBool, tx: &Sender<Msg>, notify: &dyn Fn()
         Orientation::Portrait => Some(false),
         Orientation::Landscape => Some(true),
     };
-    let dc = PrinterDc::open_oriented(&job.printer, forced)?;
+    // il colore scelto viene imposto anche al driver, così stampa come lo si vede in anteprima
+    let driver_color = match job.color_mode {
+        ColorMode::Color => Some(true),
+        ColorMode::Gray => Some(false),
+        ColorMode::Auto => None,
+    };
+    let dc = PrinterDc::open_with(&job.printer, forced, driver_color)?;
     let (pw, ph) = dc.page_px();
     let (dpi_x, _dpi_y) = dc.dpi();
     if pw <= 0 || ph <= 0 || dpi_x <= 0 {

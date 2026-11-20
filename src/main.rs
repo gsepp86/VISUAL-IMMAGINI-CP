@@ -510,6 +510,11 @@ impl App {
             .or_else(|| default.and_then(|d| printers.iter().position(|p| *p == d)))
             .unwrap_or(0);
         self.print.printers = printers;
+        // a ogni apertura il colore riparte da quello predefinito del driver
+        let sel = self.print.printers.get(self.print.selected).cloned();
+        if let Some(mode) = print::printer_default_color(sel.as_deref()) {
+            self.print.color_mode = mode;
+        }
         self.print.scope = scope;
         self.print.message.clear();
         self.print.open = true;
