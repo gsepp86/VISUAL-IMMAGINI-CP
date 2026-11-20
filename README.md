@@ -4,6 +4,12 @@ Lettore immagini opensource creato da Peppe CP in collaborazione con IA.
 
 Semplice come il Visualizzatore foto di Windows 7, ma moderno e veloce. Scritto in Rust.
 
+### Se vuoi contribuire al mio lavoro visto il tempo che ti farò risparmiare quando stampi tanti file ti lascio in basso il pulsante per contribuire anche con una piccola donazione simbolica visto che una app così utile gratis per sempre non la trovi ovunque apprezzo il gesto ;-)
+
+[![Donate via PayPal](https://img.shields.io/badge/Donate-PayPal-blue.svg?logo=paypal)](https://paypal.me/PeppeCP)
+
+In questa nuova build è stato aggiunto il supporto in inglese (attualmente supporta italiano e inglese)
+
 ## Funzioni
 
 - **Interfaccia a schede** nella barra del titolo (Ctrl+O apre in una nuova scheda, Ctrl+W la chiude)
