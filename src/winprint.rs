@@ -21,9 +21,12 @@ const DM_IN_BUFFER: u32 = 8;
 const DM_OUT_BUFFER: u32 = 2;
 const DMORIENT_PORTRAIT: i16 = 1;
 const DMORIENT_LANDSCAPE: i16 = 2;
+const DMCOLOR_MONOCHROME: i16 = 1;
+const DMCOLOR_COLOR: i16 = 2;
 // posizione dei campi nella struttura DEVMODEW di Windows
 const DM_FIELDS_OFFSET: usize = 72;
 const DM_ORIENTATION_OFFSET: usize = 76;
+const DM_COLOR_OFFSET: usize = 92;
 
 #[repr(C)]
 struct DocInfoW {
@@ -233,6 +236,27 @@ impl PrinterDc {
         let mm_x = left.max(right) as f32 / dx as f32 * 25.4;
         let mm_y = top.max(bottom) as f32 / dy as f32 * 25.4;
         mm_x.max(mm_y)
+    }
+
+    /// Colore predefinito del driver: Some(true) = colori, Some(false) = bianco e nero, None = non dichiarato.
+    pub fn default_color(printer: &str) -> Option<bool> {
+        let name = wide(printer);
+        unsafe {
+            let size = DocumentPropertiesW(0, name.as_ptr(), name.as_ptr(), std::ptr::null_mut(), null(), 0);
+            if size <= 0 {
+                return None;
+            }
+            let mut buf = vec![0u64; (size as usize + 7) / 8];
+            let dm = buf.as_mut_ptr() as *mut u8;
+            if DocumentPropertiesW(0, name.as_ptr(), name.as_ptr(), dm, null(), DM_OUT_BUFFER) != 1 {
+                return None;
+            }
+            match *(dm.add(DM_COLOR_OFFSET) as *const i16) {
+                DMCOLOR_COLOR => Some(true),
+                DMCOLOR_MONOCHROME => Some(false),
+                _ => None,
+            }
+        }
     }
 
     /// Apre la stampante chiedendo al driver il verso della carta:

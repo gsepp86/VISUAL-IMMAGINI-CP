@@ -1831,6 +1831,12 @@ impl App {
                 self.print.margin_mm = self.print.printer_margin_mm.min(30.0);
             }
             self.print.margin_locked = false;
+            // cambiando stampante si segue il colore predefinito del suo driver
+            if !first {
+                if let Some(mode) = print::printer_default_color(sel_name.as_deref()) {
+                    self.print.color_mode = mode;
+                }
+            }
             self.print.page_for = sel_name.clone();
         }
         self.refresh_print_tex(ctx);
@@ -1850,15 +1856,15 @@ impl App {
                 .pivot(Align2::CENTER_CENTER)
                 .default_pos(ctx.screen_rect().center())
                 .show(ctx, |ui| {
-                    ui.set_min_width(520.0);
-                    // testo più grande nella finestra di stampa, per riempire lo spazio disponibile
+                    ui.set_min_width(470.0);
+                    // testo poco più grande del normale, ma con la finestra compatta
                     {
                         let style = ui.style_mut();
                         for font in style.text_styles.values_mut() {
-                            font.size *= 1.25;
+                            font.size *= 1.1;
                         }
-                        style.spacing.interact_size.y *= 1.25;
-                        style.spacing.item_spacing *= 1.15;
+                        style.spacing.interact_size.y *= 1.1;
+                        style.spacing.item_spacing *= 1.08;
                     }
                     if !cfg!(windows) {
                         ui.colored_label(Color32::from_rgb(255, 190, 80), "La stampa è disponibile solo su Windows.");

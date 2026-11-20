@@ -112,6 +112,18 @@ pub fn printer_min_margin_mm(_name: Option<&str>) -> f32 {
     5.0
 }
 
+/// Colore predefinito della stampante letto dal driver: None se il driver non lo dichiara.
+#[cfg(windows)]
+pub fn printer_default_color(name: Option<&str>) -> Option<ColorMode> {
+    name.and_then(crate::winprint::PrinterDc::default_color)
+        .map(|colori| if colori { ColorMode::Color } else { ColorMode::Gray })
+}
+
+#[cfg(not(windows))]
+pub fn printer_default_color(_name: Option<&str>) -> Option<ColorMode> {
+    None
+}
+
 /// Esegue la stampa (bloccante: va chiamata in un thread). `notify` serve a svegliare l'interfaccia.
 pub fn run(job: Job, cancel: Arc<AtomicBool>, tx: Sender<Msg>, notify: impl Fn()) {
     let msg = match run_inner(&job, &cancel, &tx, &notify) {

@@ -13,7 +13,7 @@ Semplice come il Visualizzatore foto di Windows 7, ma moderno e veloce. Scritto 
 - **Stampa N-in-1**: 1, 2, 4, 6, 8, 9, 12, 16 immagini per pagina, orientamento, margini, spazio tra le foto
 - **Ritaglio libero** (tasto C o icona della barra): trascina angoli, lati o l'interno; Invio applica, Esc annulla. Il ritaglio entra nella stampa.
 - **Orientamento automatico**: per ogni foto sceglie il verso migliore, e il foglio si orienta da solo
-- **Colori di stampa**: colori, bianco e nero (scala di grigi) o automatico (grigio solo per le foto già in grigio), anche nell'anteprima
+- **Colori di stampa**: colori, bianco e nero (scala di grigi) o automatico (grigio solo per le foto già in grigio), anche nell'anteprima; cambiando stampante si parte dal colore predefinito del suo driver
 - **Finestra di stampa spostabile**: si trascina dalla barra del titolo e resta dove la si lascia
 - **Regolazione foto**: chiaro/scuro e contrasto nella finestra di stampa (anche nell'anteprima)
 - **Preferenze e driver della stampante**: apre le impostazioni del driver per modifiche avanzate
