@@ -12,6 +12,7 @@ const PHYSICALWIDTH: i32 = 110;
 const PHYSICALHEIGHT: i32 = 111;
 const PHYSICALOFFSETX: i32 = 112;
 const PHYSICALOFFSETY: i32 = 113;
+const NUMCOLORS: i32 = 24;
 const PRINTER_ENUM_LOCAL: u32 = 2;
 const PRINTER_ENUM_CONNECTIONS: u32 = 4;
 const DIB_RGB_COLORS: u32 = 0;
@@ -68,6 +69,9 @@ struct PrinterInfo4W {
 #[link(name = "winspool")]
 extern "system" {
     fn GetDefaultPrinterW(buffer: *mut u16, size: *mut u32) -> i32;
+    fn OpenPrinterW(name: *const u16, handle: *mut isize, defaults: *const c_void) -> i32;
+    fn ClosePrinter(handle: isize) -> i32;
+    fn GetPrinterW(handle: isize, level: u32, buf: *mut u8, cb: u32, needed: *mut u32) -> i32;
     fn EnumPrintersW(
         flags: u32,
         name: *const u16,
@@ -116,6 +120,14 @@ extern "system" {
         input: *const u8,
         mode: u32,
     ) -> i32;
+}
+
+unsafe fn color_from_devmode(dm: *const u8) -> Option<bool> {
+    match *(dm.add(DM_COLOR_OFFSET) as *const i16) {
+        DMCOLOR_COLOR => Some(true),
+        DMCOLOR_MONOCHROME => Some(false),
+        _ => None,
+    }
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -242,20 +254,45 @@ impl PrinterDc {
     pub fn default_color(printer: &str) -> Option<bool> {
         let name = wide(printer);
         unsafe {
-            let size = DocumentPropertiesW(0, name.as_ptr(), name.as_ptr(), std::ptr::null_mut(), null(), 0);
-            if size <= 0 {
-                return None;
+            // 1) DEVMODE predefinita della stampante, quella che Windows usa davvero
+            let mut handle: isize = 0;
+            if OpenPrinterW(name.as_ptr(), &mut handle, null()) != 0 {
+                let mut needed: u32 = 0;
+                GetPrinterW(handle, 8, std::ptr::null_mut(), 0, &mut needed);
+                let mut found = None;
+                if (needed as usize) >= std::mem::size_of::<*const u8>() {
+                    let mut buf = vec![0u64; (needed as usize + 7) / 8];
+                    if GetPrinterW(handle, 8, buf.as_mut_ptr() as *mut u8, needed, &mut needed) != 0 {
+                        let dm = *(buf.as_ptr() as *const *const u8);
+                        if !dm.is_null() {
+                            found = color_from_devmode(dm);
+                        }
+                    }
+                }
+                ClosePrinter(handle);
+                if found.is_some() {
+                    return found;
+                }
             }
-            let mut buf = vec![0u64; (size as usize + 7) / 8];
-            let dm = buf.as_mut_ptr() as *mut u8;
-            if DocumentPropertiesW(0, name.as_ptr(), name.as_ptr(), dm, null(), DM_OUT_BUFFER) != 1 {
-                return None;
+            // 2) driver che non espone la DEVMODE predefinita: gliela si chiede
+            let size = DocumentPropertiesW(0, name.as_ptr(), std::ptr::null(), std::ptr::null_mut(), null(), 0);
+            if size > 0 {
+                let mut buf = vec![0u64; (size as usize + 7) / 8];
+                let dm = buf.as_mut_ptr() as *mut u8;
+                if DocumentPropertiesW(0, name.as_ptr(), std::ptr::null(), dm, null(), DM_OUT_BUFFER) == 1 {
+                    if let Some(found) = color_from_devmode(dm) {
+                        return Some(found);
+                    }
+                }
             }
-            match *(dm.add(DM_COLOR_OFFSET) as *const i16) {
-                DMCOLOR_COLOR => Some(true),
-                DMCOLOR_MONOCHROME => Some(false),
-                _ => None,
+            // 3) ultimo tentativo: un dispositivo colore non ha un numero di colori finito
+            if let Ok(dc) = Self::open(printer) {
+                let colors = GetDeviceCaps(dc.hdc, NUMCOLORS);
+                if colors != 0 {
+                    return Some(colors < 0);
+                }
             }
+            None
         }
     }
 

@@ -245,6 +245,8 @@ struct App {
     update_result: Option<UpdateCheck>,
     show_settings: bool,
     light_theme: bool,
+    /// stampante da proporre all'apertura della stampa: "sistema", "ultima" o il suo nome
+    startup_printer: String,
     show_strip: bool,
     print: PrintUi,
     icon_tex: Option<egui::TextureHandle>,
@@ -345,6 +347,7 @@ impl App {
 
         let mut print_ui = PrintUi::new();
         load_print_prefs(&mut print_ui);
+        let startup_printer = load_startup_printer();
         let mut app = App {
             tabs: Vec::new(),
             active: 0,
@@ -360,6 +363,7 @@ impl App {
             update_result: None,
             show_settings: false,
             light_theme: col::is_light(),
+            startup_printer,
             show_strip: true,
             print: print_ui,
             icon_tex,
@@ -496,7 +500,15 @@ impl App {
 
     fn open_print(&mut self, scope: Scope) {
         let (printers, default) = print::list_printers();
-        self.print.selected = default.as_ref().and_then(|d| printers.iter().position(|p| p == d)).unwrap_or(0);
+        let wanted = match self.startup_printer.as_str() {
+            "ultima" => read_settings().get("stampa.ultima_stampante").cloned(),
+            "sistema" => default.clone(),
+            name => Some(name.to_string()),
+        };
+        self.print.selected = wanted
+            .and_then(|w| printers.iter().position(|p| *p == w))
+            .or_else(|| default.and_then(|d| printers.iter().position(|p| *p == d)))
+            .unwrap_or(0);
         self.print.printers = printers;
         self.print.scope = scope;
         self.print.message.clear();
@@ -1617,20 +1629,57 @@ impl App {
         }
         let mut open = true;
         let before = self.light_theme;
+        let before_printer = self.startup_printer.clone();
+        // elenco stampanti per scegliere quella da usare all'avvio
+        if self.print.printers.is_empty() {
+            self.print.printers = print::list_printers().0;
+        }
+        let printers = self.print.printers.clone();
         egui::Window::new("Impostazioni")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.label("Tema");
+                ui.set_min_width(380.0);
+                ui.label(egui::RichText::new("Tema").strong());
                 ui.radio_value(&mut self.light_theme, false, "Scuro (predefinito)");
                 ui.radio_value(&mut self.light_theme, true, "Chiaro");
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Stampante all'avvio").strong());
+                let selected = match self.startup_printer.as_str() {
+                    "sistema" => "Predefinita di Windows".to_string(),
+                    "ultima" => "Ultima utilizzata".to_string(),
+                    name => name.to_string(),
+                };
+                egui::ComboBox::from_id_salt("startup_printer")
+                    .width(330.0)
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.startup_printer, "sistema".to_string(), "Predefinita di Windows");
+                        ui.selectable_value(&mut self.startup_printer, "ultima".to_string(), "Ultima utilizzata");
+                        if !printers.is_empty() {
+                            ui.separator();
+                            for name in printers.iter() {
+                                ui.selectable_value(&mut self.startup_printer, name.clone(), name.as_str());
+                            }
+                        }
+                    });
+                ui.label(
+                    egui::RichText::new("È la stampante proposta quando apri la finestra di stampa.")
+                        .color(col::text_dim())
+                        .size(12.0),
+                );
             });
         if self.light_theme != before {
             col::set_light(self.light_theme);
             setup_style(ctx);
             save_light_theme(self.light_theme);
+        }
+        if self.startup_printer != before_printer {
+            save_startup_printer(&self.startup_printer);
         }
         self.show_settings = open;
     }
@@ -1776,6 +1825,7 @@ impl App {
             self.print.message = "Nessuna immagine da stampare.".to_string();
             return;
         }
+        save_last_printer(&printer);
         let copies = self.print.copies.max(1);
         let repeat = self.print.repeat.max(1);
         let poster = self.print.poster.then_some((self.print.poster_cols.max(1), self.print.poster_rows.max(1)));
@@ -1831,11 +1881,9 @@ impl App {
                 self.print.margin_mm = self.print.printer_margin_mm.min(30.0);
             }
             self.print.margin_locked = false;
-            // cambiando stampante si segue il colore predefinito del suo driver
-            if !first {
-                if let Some(mode) = print::printer_default_color(sel_name.as_deref()) {
-                    self.print.color_mode = mode;
-                }
+            // il colore parte sempre da quello predefinito del driver della stampante scelta
+            if let Some(mode) = print::printer_default_color(sel_name.as_deref()) {
+                self.print.color_mode = mode;
             }
             self.print.page_for = sel_name.clone();
         }
@@ -1844,7 +1892,6 @@ impl App {
         let mut start = false;
         let mut cancel = false;
         let mut close = false;
-        let mut light = self.light_theme;
         {
             let p = &mut self.print;
             // spostabile: si trascina dalla barra del titolo e resta dove la si lascia
@@ -1856,32 +1903,18 @@ impl App {
                 .pivot(Align2::CENTER_CENTER)
                 .default_pos(ctx.screen_rect().center())
                 .show(ctx, |ui| {
-                    ui.set_min_width(470.0);
-                    // testo poco più grande del normale, ma con la finestra compatta
-                    {
-                        let style = ui.style_mut();
-                        for font in style.text_styles.values_mut() {
-                            font.size *= 1.1;
-                        }
-                        style.spacing.interact_size.y *= 1.1;
-                        style.spacing.item_spacing *= 1.08;
-                    }
+                    ui.set_min_width(430.0);
                     if !cfg!(windows) {
                         ui.colored_label(Color32::from_rgb(255, 190, 80), "La stampa è disponibile solo su Windows.");
                     }
                     ui.horizontal(|ui| {
                         ui.label("Stampante:");
                         let sel = p.printers.get(p.selected).cloned().unwrap_or_else(|| "Nessuna stampante trovata".to_string());
-                        egui::ComboBox::from_id_salt("printer_combo").width(340.0).selected_text(sel).show_ui(ui, |ui| {
+                        egui::ComboBox::from_id_salt("printer_combo").width(300.0).selected_text(sel).show_ui(ui, |ui| {
                             for (i, name) in p.printers.iter().enumerate() {
                                 ui.selectable_value(&mut p.selected, i, name.as_str());
                             }
                         });
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Tema:");
-                        ui.radio_value(&mut light, false, "Scuro");
-                        ui.radio_value(&mut light, true, "Chiaro");
                     });
                     ui.separator();
 
@@ -2060,12 +2093,6 @@ impl App {
         if key != self.print.saved_prefs {
             save_print_prefs(&self.print);
             self.print.saved_prefs = key;
-        }
-        if light != self.light_theme {
-            self.light_theme = light;
-            col::set_light(light);
-            setup_style(ctx);
-            save_light_theme(light);
         }
         if cancel {
             if let Some(run) = &self.print.running {
@@ -2283,6 +2310,26 @@ fn load_light_theme() -> bool {
 fn save_light_theme(light: bool) {
     let mut map = read_settings();
     map.insert("tema".to_string(), if light { "chiaro" } else { "scuro" }.to_string());
+    write_settings(&map);
+}
+
+/// Stampante da proporre all'avvio: "sistema" (predefinita di Windows), "ultima" o il suo nome.
+fn load_startup_printer() -> String {
+    read_settings().get("stampa.avvio").cloned().unwrap_or_else(|| "sistema".to_string())
+}
+
+fn save_startup_printer(value: &str) {
+    let mut map = read_settings();
+    map.insert("stampa.avvio".to_string(), value.to_string());
+    write_settings(&map);
+}
+
+fn save_last_printer(name: &str) {
+    let mut map = read_settings();
+    if map.get("stampa.ultima_stampante").map(String::as_str) == Some(name) {
+        return;
+    }
+    map.insert("stampa.ultima_stampante".to_string(), name.to_string());
     write_settings(&map);
 }
 
@@ -2507,8 +2554,8 @@ fn draw_page_preview(
         print::Orientation::Landscape if page_mm.0 < page_mm.1 => (page_mm.1, page_mm.0),
         _ => page_mm,
     };
-    // la pagina entra in 320 x 460 punti
-    let s = (320.0 / pw_mm).min(460.0 / ph_mm);
+    // la pagina entra in 290 x 420 punti
+    let s = (290.0 / pw_mm).min(420.0 / ph_mm);
     let (rect, _) = ui.allocate_exact_size(vec2(pw_mm * s, ph_mm * s), egui::Sense::hover());
     let painter = ui.painter_at(rect.expand(6.0));
     // ombra del foglio, poi foglio bianco con bordo ben visibile
@@ -2556,7 +2603,7 @@ fn draw_poster_preview(ui: &mut egui::Ui, items: &[PreviewItem], page_mm: (f32, 
         print::Orientation::Landscape if page_mm.0 < page_mm.1 => (page_mm.1, page_mm.0),
         _ => page_mm,
     };
-    let s = (320.0 / pw_mm).min(460.0 / ph_mm);
+    let s = (290.0 / pw_mm).min(420.0 / ph_mm);
     let (rect, _) = ui.allocate_exact_size(vec2(pw_mm * s, ph_mm * s), egui::Sense::hover());
     let painter = ui.painter_at(rect.expand(6.0));
     painter.rect_filled(rect.translate(vec2(3.0, 3.0)), 2.0, Color32::from_black_alpha(90));

@@ -40,4 +40,8 @@ jobs:
         run: |
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
           $assets = Get-ChildItem dist\*.exe | ForEach-Object { $_.FullName }
+          gh release view "v$version" | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "v$version" --target ${{ github.sha }} --title "v$version" --notes "Visualizzatore Immagini CP v$version"
+          }
           gh release upload "v$version" $assets --clobber
